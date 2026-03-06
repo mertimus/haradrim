@@ -1,0 +1,55 @@
+name: haradrim
+region: nyc
+ingress:
+  rules:
+    - component:
+        name: api
+      match:
+        path:
+          prefix: /api
+    - component:
+        name: web
+      match:
+        path:
+          prefix: /
+services:
+  - name: api
+    github:
+      repo: mertimus/haradrim
+      branch: main
+      deploy_on_push: true
+    source_dir: backend
+    environment_slug: node-js
+    instance_count: 1
+    instance_size_slug: basic-xs
+    http_port: 8080
+    run_command: npm start
+    health_check:
+      http_path: /healthz
+      initial_delay_seconds: 10
+      period_seconds: 15
+    envs:
+      - key: HELIUS_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_WITH_HELIUS_API_KEY
+      - key: BIRDEYE_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_WITH_BIRDEYE_API_KEY
+      - key: CACHE_MAX_ENTRIES
+        scope: RUN_TIME
+        value: "1000"
+      - key: CACHE_MAX_BODY_BYTES
+        scope: RUN_TIME
+        value: "2000000"
+static_sites:
+  - name: web
+    github:
+      repo: mertimus/haradrim
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    build_command: npm ci && npm run build
+    output_dir: dist
+    catchall_document: index.html

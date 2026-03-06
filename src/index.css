@@ -1,0 +1,542 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+    --radius-2xl: calc(var(--radius) + 8px);
+    --radius-3xl: calc(var(--radius) + 12px);
+    --radius-4xl: calc(var(--radius) + 16px);
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+    --color-sidebar: var(--sidebar);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-cyan: #00d4ff;
+    --color-amber: #ffb800;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+    --radius: 0.25rem;
+    --background: #0a0e17;
+    --foreground: #c8d6e5;
+    --card: #0d1321;
+    --card-foreground: #c8d6e5;
+    --popover: #0d1321;
+    --popover-foreground: #c8d6e5;
+    --primary: #00d4ff;
+    --primary-foreground: #0a0e17;
+    --secondary: #1a1f2e;
+    --secondary-foreground: #c8d6e5;
+    --muted: #1a1f2e;
+    --muted-foreground: #6b7b8d;
+    --accent: #ffb800;
+    --accent-foreground: #0a0e17;
+    --destructive: #ff2d2d;
+    --border: #1e2a3a;
+    --input: #1e2a3a;
+    --ring: #00d4ff;
+    --chart-1: #00d4ff;
+    --chart-2: #ffb800;
+    --chart-3: #ff2d2d;
+    --chart-4: #00ff88;
+    --chart-5: #a855f7;
+    --sidebar: #0d1321;
+    --sidebar-foreground: #c8d6e5;
+    --sidebar-primary: #00d4ff;
+    --sidebar-primary-foreground: #0a0e17;
+    --sidebar-accent: #1a1f2e;
+    --sidebar-accent-foreground: #c8d6e5;
+    --sidebar-border: #1e2a3a;
+    --sidebar-ring: #00d4ff;
+}
+
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+    body {
+        @apply bg-background text-foreground font-sans;
+        min-height: 100vh;
+    }
+}
+
+/* Scanline overlay */
+.scanline {
+    position: relative;
+    overflow: hidden;
+}
+.scanline::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 212, 255, 0.015) 2px,
+        rgba(0, 212, 255, 0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* Glow effects */
+.glow-cyan {
+    box-shadow: 0 0 15px rgba(0, 212, 255, 0.15), 0 0 30px rgba(0, 212, 255, 0.05);
+}
+.glow-cyan-strong {
+    box-shadow: 0 0 20px rgba(0, 212, 255, 0.3), 0 0 40px rgba(0, 212, 255, 0.1);
+}
+.text-glow-cyan {
+    text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+}
+
+/* Corner bracket card */
+.corner-bracket {
+    position: relative;
+}
+.corner-bracket::before,
+.corner-bracket::after,
+.corner-bracket > .corner-bl::before,
+.corner-bracket > .corner-br::before {
+    content: "";
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-color: #00d4ff;
+    opacity: 0.4;
+    z-index: 5;
+}
+.corner-bracket::before {
+    top: -1px;
+    left: -1px;
+    border-top: 1px solid;
+    border-left: 1px solid;
+}
+.corner-bracket::after {
+    top: -1px;
+    right: -1px;
+    border-top: 1px solid;
+    border-right: 1px solid;
+}
+.corner-bracket > .corner-bl::before {
+    bottom: -1px;
+    left: -1px;
+    border-bottom: 1px solid;
+    border-left: 1px solid;
+}
+.corner-bracket > .corner-br::before {
+    bottom: -1px;
+    right: -1px;
+    border-bottom: 1px solid;
+    border-right: 1px solid;
+}
+
+/* Sequential reveal animations */
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+.animate-reveal {
+    animation: fadeInUp 0.4s ease-out forwards;
+    opacity: 0;
+}
+.reveal-delay-1 { animation-delay: 0.05s; }
+.reveal-delay-2 { animation-delay: 0.1s; }
+.reveal-delay-3 { animation-delay: 0.15s; }
+.reveal-delay-4 { animation-delay: 0.2s; }
+.reveal-delay-5 { animation-delay: 0.25s; }
+.reveal-delay-6 { animation-delay: 0.3s; }
+.reveal-delay-7 { animation-delay: 0.35s; }
+.reveal-delay-8 { animation-delay: 0.4s; }
+
+/* Tactical grid background for graph panel */
+.graph-grid-bg {
+    background-color: #0a0e17;
+    background-image:
+        linear-gradient(rgba(20, 28, 43, 0.6) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(20, 28, 43, 0.6) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+
+/* Edge flow animation (referenced by inline style animation name) */
+@keyframes edgeFlow {
+    to {
+        stroke-dashoffset: -12;
+    }
+}
+
+/* Scanning loading text */
+.scanning-text {
+    animation: scanPulse 1.5s ease-in-out infinite;
+}
+@keyframes scanPulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+
+/* Center / target node pulsing glow — GPU-compositable opacity animation on pseudo-element */
+.center-node-pulse {
+    position: relative;
+}
+.center-node-pulse::before {
+    content: "";
+    position: absolute;
+    inset: -6px;
+    border-radius: 10px;
+    box-shadow: 0 0 30px rgba(0, 212, 255, 0.4), 0 0 60px rgba(0, 212, 255, 0.15);
+    animation: centerPulse 3s ease-in-out infinite;
+    pointer-events: none;
+    z-index: -1;
+    will-change: opacity;
+}
+@keyframes centerPulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+/* Staggered table row reveal */
+.table-row-reveal {
+    animation: rowReveal 0.3s ease-out forwards;
+    opacity: 0;
+}
+@keyframes rowReveal {
+    from {
+        opacity: 0;
+        transform: translateX(-4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* Profile section sequential reveal */
+.profile-reveal {
+    animation: profileSlideIn 0.35s ease-out forwards;
+    opacity: 0;
+}
+@keyframes profileSlideIn {
+    from {
+        opacity: 0;
+        transform: translateX(-6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* Table row hover */
+.table-row-hover:hover {
+    background-color: rgba(0, 212, 255, 0.05) !important;
+}
+
+.table-row-selected {
+    background-color: rgba(0, 212, 255, 0.08) !important;
+    box-shadow: inset 2px 0 0 rgba(0, 212, 255, 0.65);
+}
+
+/* Graph node highlight on table hover */
+.react-flow__node.node-highlighted {
+    z-index: 10 !important;
+    filter: brightness(1.6) drop-shadow(0 0 12px rgba(0, 212, 255, 0.7));
+    transition: filter 0.15s ease;
+    will-change: filter;
+}
+
+/* Volume slider */
+.volume-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    outline: none;
+}
+.volume-slider::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 2px;
+    background: #1e2a3a;
+}
+.volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #0d1321;
+    border: 1.5px solid #00d4ff;
+    margin-top: -3.5px;
+    cursor: pointer;
+    box-shadow: 0 0 4px rgba(0, 212, 255, 0.4);
+}
+.volume-slider::-moz-range-track {
+    height: 3px;
+    border-radius: 2px;
+    background: #1e2a3a;
+    border: none;
+}
+.volume-slider::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #0d1321;
+    border: 1.5px solid #00d4ff;
+    cursor: pointer;
+    box-shadow: 0 0 4px rgba(0, 212, 255, 0.4);
+}
+
+/* ---- CSS-driven node hover effects (no React state) ---- */
+
+/* Node shape: tier-based glow via --ring-rgb custom property */
+.node-shape {
+    transition: filter 0.15s ease;
+}
+.node-shape[data-tier="1"] {
+    filter: drop-shadow(0 0 4px rgba(var(--ring-rgb), 0.2));
+}
+.node-shape[data-tier="2"] {
+    filter: drop-shadow(0 0 2px rgba(var(--ring-rgb), 0.1));
+}
+.node-shape:hover {
+    filter: drop-shadow(0 0 12px rgba(var(--ring-rgb), 0.5)) drop-shadow(0 0 24px rgba(var(--ring-rgb), 0.15));
+}
+
+/* Node label visibility — all visible by default */
+.node-label,
+.node-addr,
+.node-stats {
+    transition: opacity 0.12s ease;
+}
+
+/* Program triangle polygon glow on hover */
+.node-polygon {
+    transition: filter 0.15s ease;
+}
+.node-shape:hover .node-polygon {
+    filter: drop-shadow(0 0 8px rgba(var(--ring-rgb), 0.5));
+}
+
+/* ---- Edge flow animation + CSS-driven tooltip ---- */
+
+/* Edge path opacity via CSS custom properties */
+.flow-edge-group .react-flow__edge-path {
+    opacity: var(--edge-opacity, 0.5);
+    animation: edgeFlow 0.6s linear infinite;
+    transition: opacity 0.15s ease;
+}
+.flow-edge-group:hover .react-flow__edge-path {
+    opacity: var(--edge-hover-opacity, 0.8);
+}
+
+/* Edge tooltip: hidden by default, shown on hover */
+.edge-tooltip {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+.flow-edge-group:hover .edge-tooltip {
+    opacity: 1;
+}
+
+/* Connection edge fade-in */
+@keyframes edgeFadeIn {
+    from { opacity: 0; }
+    to { opacity: var(--edge-opacity, 0.5); }
+}
+.connection-edge-reveal {
+    animation: edgeFadeIn 0.6s ease-out forwards;
+}
+
+/* Connection edge tooltip — hidden by default, shown on hover */
+.conn-edge-tooltip {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+.connection-edge-group:hover .conn-edge-tooltip {
+    opacity: 1;
+}
+
+/* Cluster highlight on node */
+.node-cluster-highlight {
+    filter: drop-shadow(0 0 16px rgba(255, 184, 0, 0.6)) !important;
+    z-index: 10 !important;
+}
+
+/* Whale holder pulse animation */
+.whale-pulse {
+    animation: whalePulse 2.5s ease-in-out infinite;
+}
+@keyframes whalePulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(255, 45, 45, 0.2); }
+    50% { box-shadow: 0 0 16px rgba(255, 45, 45, 0.5), 0 0 32px rgba(255, 45, 45, 0.15); }
+}
+
+/* Funder node pulse */
+.funder-pulse {
+    animation: funderPulse 2s ease-in-out infinite;
+}
+@keyframes funderPulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(255, 45, 45, 0.3); }
+    50% { box-shadow: 0 0 20px rgba(255, 45, 45, 0.6), 0 0 40px rgba(255, 45, 45, 0.2); }
+}
+
+/* Funding edge flow */
+@keyframes fundingFlow {
+    to { stroke-dashoffset: -16; }
+}
+.funding-edge-path {
+    stroke-dasharray: 8 8;
+    animation: fundingFlow 0.8s linear infinite;
+}
+
+/* Funding edge fade-in */
+.funding-edge-reveal {
+    animation: edgeFadeIn 0.6s ease-out forwards;
+}
+
+/* Funding edge tooltip — hidden by default, shown on hover */
+.funding-edge-tooltip {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+.funding-edge-group:hover .funding-edge-tooltip {
+    opacity: 1;
+}
+
+/* Funder highlight — dim everything, then pop highlighted nodes */
+.react-flow.has-funder-highlight .react-flow__node {
+    opacity: 0.12 !important;
+    transition: opacity 0.2s ease;
+}
+.react-flow.has-funder-highlight .react-flow__edge {
+    opacity: 0.05 !important;
+    transition: opacity 0.2s ease;
+}
+.react-flow.has-funder-highlight .node-funder-highlight {
+    opacity: 1 !important;
+    filter: drop-shadow(0 0 20px rgba(255, 45, 45, 0.8)) drop-shadow(0 0 40px rgba(255, 45, 45, 0.4)) !important;
+    z-index: 10 !important;
+}
+
+/* Bundle highlight — dim everything, pop bundle members with their color */
+.react-flow.has-bundle-highlight .react-flow__node {
+    opacity: 0.12 !important;
+    transition: opacity 0.2s ease;
+}
+.react-flow.has-bundle-highlight .node-bundle-highlight {
+    opacity: 1 !important;
+    filter: drop-shadow(0 0 16px var(--bundle-color, rgba(168, 85, 247, 0.6))) !important;
+    z-index: 10 !important;
+}
+
+/* ---- Time Relapse: hide all during playback ---- */
+.relapse-active .react-flow__node {
+    opacity: 0;
+    transform: scale(0.3);
+    transition: opacity 0.4s ease, transform 0.4s ease;
+    pointer-events: none;
+}
+.relapse-active .react-flow__edge {
+    opacity: 0 !important;
+    transition: opacity 0.3s ease;
+}
+.relapse-active .react-flow__background {
+    opacity: 0.3;
+    transition: opacity 0.8s ease;
+}
+
+/* Center node bloom — the origin star */
+.relapse-active .react-flow__node.relapse-center {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+    animation: relapseBloomCenter 1.2s ease-out;
+}
+
+/* Counterparty node bloom — star being born */
+.relapse-active .react-flow__node.relapse-visible {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+    animation: relapseBloomNode 0.5s ease-out;
+}
+
+/* Edge reveal */
+.relapse-active .react-flow__edge.relapse-visible {
+    opacity: 1 !important;
+    animation: relapseEdgeFadeIn 0.4s ease-out;
+}
+
+@keyframes relapseBloomCenter {
+    0% { opacity: 0; transform: scale(0); filter: brightness(3) drop-shadow(0 0 40px rgba(0, 212, 255, 0.9)); }
+    40% { opacity: 1; transform: scale(1.15); filter: brightness(2) drop-shadow(0 0 30px rgba(0, 212, 255, 0.7)); }
+    100% { transform: scale(1); filter: none; }
+}
+
+@keyframes relapseBloomNode {
+    0% { opacity: 0; transform: scale(0.3); filter: brightness(2.5) drop-shadow(0 0 20px rgba(0, 212, 255, 0.6)); }
+    50% { transform: scale(1.08); filter: brightness(1.5); }
+    100% { transform: scale(1); filter: none; }
+}
+
+@keyframes relapseEdgeFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ---- Trace mode ---- */
+
+/* Selected node in trace graph — cyan highlight ring */
+.react-flow__node.trace-node-selected {
+    z-index: 10 !important;
+    filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.6)) drop-shadow(0 0 24px rgba(0, 212, 255, 0.2));
+    transition: filter 0.15s ease;
+}
+
+.react-flow__node.wallet-node-selected {
+    z-index: 10 !important;
+    filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.65)) drop-shadow(0 0 24px rgba(0, 212, 255, 0.22));
+    transition: filter 0.15s ease;
+}
