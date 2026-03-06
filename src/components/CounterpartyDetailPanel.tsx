@@ -165,15 +165,15 @@ export function CounterpartyDetailPanel({
           <div className="mt-0.5 font-mono text-[11px] font-bold text-foreground">{detail.txCount.toLocaleString()}</div>
         </div>
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
-          <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-muted-foreground">Sent</div>
+          <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Sent SOL</div>
           <div className="mt-0.5 font-mono text-[11px] font-bold text-destructive">{fmtSol(detail.solSent)}</div>
         </div>
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
-          <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-muted-foreground">Recv</div>
+          <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Recv SOL</div>
           <div className="mt-0.5 font-mono text-[11px] font-bold text-[#00ff88]">{fmtSol(detail.solReceived)}</div>
         </div>
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
-          <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-muted-foreground">Net</div>
+          <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Net SOL</div>
           <div className={`mt-0.5 font-mono text-[11px] font-bold ${detail.solNet >= 0 ? "text-[#00ff88]" : "text-destructive"}`}>
             {detail.solNet >= 0 ? "+" : ""}
             {fmtSol(detail.solNet)}

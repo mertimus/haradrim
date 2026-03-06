@@ -335,8 +335,8 @@ export function CounterpartyTable({
               )}
             </TableHead>
             <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("tx")}>Tx<SortIcon col="tx" sortKey={sortKey} sortDir={sortDir} /></TableHead>
-            <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("vol")}>Vol<SortIcon col="vol" sortKey={sortKey} sortDir={sortDir} /></TableHead>
-            <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("net")}>Net<SortIcon col="net" sortKey={sortKey} sortDir={sortDir} /></TableHead>
+            <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("vol")} title="SOL volume">Vol SOL<SortIcon col="vol" sortKey={sortKey} sortDir={sortDir} /></TableHead>
+            <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("net")} title="Net SOL flow">Net SOL<SortIcon col="net" sortKey={sortKey} sortDir={sortDir} /></TableHead>
             <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("last")}>Last<SortIcon col="last" sortKey={sortKey} sortDir={sortDir} /></TableHead>
           </TableRow>
         </TableHeader>
