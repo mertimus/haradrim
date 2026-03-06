@@ -6,10 +6,11 @@ const BASE58_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 interface SearchBarProps {
   onSearch: (address: string) => void;
   loading?: boolean;
+  defaultValue?: string;
 }
 
-export function SearchBar({ onSearch, loading }: SearchBarProps) {
-  const [value, setValue] = useState("");
+export function SearchBar({ onSearch, loading, defaultValue = "" }: SearchBarProps) {
+  const [value, setValue] = useState(defaultValue);
   const [error, setError] = useState("");
 
   function handleSubmit(e: React.FormEvent) {

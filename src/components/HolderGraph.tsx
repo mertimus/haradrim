@@ -252,12 +252,12 @@ export function HolderGraph({
         screenY: event.clientY,
       });
     },
-    [],
+    [setContextMenu],
   );
 
   const handlePaneClick = useCallback(() => {
     setContextMenu(null);
-  }, []);
+  }, [setContextMenu]);
 
   useEffect(() => {
     if (!contextMenu) return;

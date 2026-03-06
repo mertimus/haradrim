@@ -9,6 +9,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { CounterpartyFlow, GraphFlowFilter } from "@/lib/parse-transactions";
+import { sortCounterparties } from "@/lib/counterparty-sorting";
 
 export interface CounterpartyDisplay extends CounterpartyFlow {
   walletColors?: string[];
@@ -34,7 +35,6 @@ interface CounterpartyTableProps {
   onAddNode: (address: string) => void;
   onRemoveNode: (address: string) => void;
   onAddOverlay: (address: string) => void;
-  timeRange: TimeRange;
   onTimeRangeChange: (range: TimeRange) => void;
   graphFlowFilter: GraphFlowFilter;
   onGraphFlowFilterChange: (filter: GraphFlowFilter) => void;
@@ -79,27 +79,6 @@ function fmtDate(ts: number): string {
 const TH =
   "font-mono text-[8px] uppercase tracking-wider text-muted-foreground";
 
-function getSortValue<T extends CounterpartyFlow>(cp: T, key: CounterpartySortKey): number {
-  switch (key) {
-    case "tx": return cp.txCount;
-    case "vol": return cp.solSent + cp.solReceived;
-    case "net": return cp.solNet;
-    case "last": return cp.lastSeen;
-  }
-}
-
-export function sortCounterparties<T extends CounterpartyFlow>(
-  counterparties: T[],
-  sortKey: CounterpartySortKey | null,
-  sortDir: CounterpartySortDir,
-): T[] {
-  if (!sortKey) {
-    return [...counterparties].sort((a, b) => b.txCount - a.txCount);
-  }
-  const mul = sortDir === "desc" ? -1 : 1;
-  return [...counterparties].sort((a, b) => mul * (getSortValue(a, sortKey) - getSortValue(b, sortKey)));
-}
-
 function SortIcon({
   col,
   sortKey,
@@ -129,7 +108,6 @@ export function CounterpartyTable({
   onAddNode,
   onRemoveNode,
   onAddOverlay,
-  timeRange,
   onTimeRangeChange,
   graphFlowFilter,
   onGraphFlowFilterChange,
@@ -147,15 +125,6 @@ export function CounterpartyTable({
   const [activePreset, setActivePreset] = useState<TimePreset>("all");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
-
-  // Sync preset state when external timeRange resets (e.g. wallet change)
-  useEffect(() => {
-    if (timeRange.start == null && timeRange.end == null) {
-      setActivePreset("all");
-      setCustomStart("");
-      setCustomEnd("");
-    }
-  }, [timeRange]);
 
   const handlePresetClick = useCallback((preset: TimePreset) => {
     setActivePreset(preset);
@@ -379,8 +348,11 @@ export function CounterpartyTable({
                 selectedAddress === cp.address ? "table-row-selected" : ""
               }`}
               style={{ animationDelay: `${Math.min(i * 30, 600)}ms` }}
-              onClick={(e) => {
+              onClick={() => {
                 onSelectAddress(cp.address);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
                 handleContextMenu(e, cp);
               }}
               onMouseEnter={() => onHoverAddress(cp.address)}

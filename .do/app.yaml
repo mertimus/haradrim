@@ -29,6 +29,9 @@ services:
       initial_delay_seconds: 10
       period_seconds: 15
     envs:
+      - key: HELIUS_RPC_URL
+        scope: RUN_TIME
+        value: REPLACE_WITH_HELIUS_RPC_URL
       - key: HELIUS_API_KEY
         scope: RUN_TIME
         type: SECRET
@@ -53,3 +56,7 @@ static_sites:
     build_command: npm ci && npm run build
     output_dir: dist
     catchall_document: index.html
+    envs:
+      - key: VITE_PUBLIC_HELIUS_RPC_URL
+        scope: BUILD_TIME
+        value: REPLACE_WITH_HELIUS_RPC_URL

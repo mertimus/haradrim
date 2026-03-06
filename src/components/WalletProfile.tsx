@@ -11,6 +11,9 @@ interface WalletProfileProps {
   identityLoading?: boolean;
   balancesLoading?: boolean;
   fundingLoading?: boolean;
+  identityFailed?: boolean;
+  balancesFailed?: boolean;
+  fundingFailed?: boolean;
   counterpartyCount?: number;
   txCount?: number;
   onNavigate?: (address: string) => void;
@@ -44,6 +47,9 @@ export function WalletProfile({
   identityLoading = false,
   balancesLoading = false,
   fundingLoading = false,
+  identityFailed = false,
+  balancesFailed = false,
+  fundingFailed = false,
   counterpartyCount,
   txCount,
   onNavigate,
@@ -95,6 +101,8 @@ export function WalletProfile({
               </button>
               {identityLoading && !identity ? (
                 <Skeleton className="h-3 w-24 bg-muted" />
+              ) : identityFailed ? (
+                <span className="font-mono text-[11px] text-destructive/80">Unavailable</span>
               ) : identity?.label ? (
                 <>
                   <span className="font-mono text-xs font-bold text-primary text-glow-cyan">
@@ -126,6 +134,8 @@ export function WalletProfile({
             <div className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Funded by</div>
             {fundingLoading && !funding ? (
               <Skeleton className="mt-0.5 h-3 w-20 bg-muted" />
+            ) : fundingFailed ? (
+              <span className="font-mono text-[11px] text-destructive/80">Unavailable</span>
             ) : funding ? (
               <button
                 onClick={() => onNavigate?.(funding.address)}
@@ -143,6 +153,8 @@ export function WalletProfile({
             <div className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">SOL</div>
             {balancesLoading && !balances ? (
               <Skeleton className="mt-0.5 h-3 w-24 bg-muted" />
+            ) : balancesFailed ? (
+              <span className="font-mono text-[11px] text-destructive/80">Unavailable</span>
             ) : (
               <div className="flex items-baseline gap-1">
                 <span className="font-mono text-[11px] text-foreground">{fmtBal(solBalance)}</span>
@@ -154,7 +166,7 @@ export function WalletProfile({
           </div>
 
           {/* Top tokens inline */}
-          {topTokens.length > 0 && (
+          {!balancesFailed && topTokens.length > 0 && (
             <div className="profile-reveal flex-none pr-4 border-r border-border mr-4" style={{ animationDelay: "0.24s" }}>
               <div className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Holdings</div>
               <div className="flex gap-3">
@@ -169,7 +181,7 @@ export function WalletProfile({
           )}
 
           {/* Portfolio total */}
-          {balances && balances.totalUsdValue > 0 && (
+          {!balancesFailed && balances && balances.totalUsdValue > 0 && (
             <div className="profile-reveal flex-none pr-4 border-r border-border mr-4" style={{ animationDelay: "0.32s" }}>
               <div className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Total</div>
               <span className="font-mono text-sm font-bold text-primary text-glow-cyan">

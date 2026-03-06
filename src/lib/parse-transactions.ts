@@ -51,6 +51,7 @@ export interface ParsedTransaction {
   signature: string;
   timestamp: number;
   solChange: number;
+  walletBalanceAfter: number;
   counterparties: string[];
   fee: number;
 }
@@ -74,6 +75,7 @@ interface MutableParsedTransaction {
   signature: string;
   timestamp: number;
   solChange: number;
+  walletBalanceAfter: number;
   counterparties: Set<string>;
   fee: number;
 }
@@ -320,6 +322,14 @@ function walletSolChange(tx: RpcTransaction, walletAddress: string): number {
   return (post - pre) / LAMPORTS_PER_SOL;
 }
 
+function walletPostBalance(tx: RpcTransaction, walletAddress: string): number {
+  const accountKeys = tx.transaction.message.accountKeys.map(resolveKey);
+  const walletIndex = accountKeys.indexOf(walletAddress);
+  if (walletIndex < 0 || !tx.meta) return 0;
+  const post = tx.meta.postBalances[walletIndex] ?? 0;
+  return post / LAMPORTS_PER_SOL;
+}
+
 export function createWalletParseAccumulator(): WalletParseAccumulator {
   return {
     counterparties: new Map(),
@@ -346,6 +356,7 @@ export function accumulateWalletParseResult(
       signature,
       timestamp: tx.blockTime ?? 0,
       solChange: walletSolChange(tx, walletAddress),
+      walletBalanceAfter: walletPostBalance(tx, walletAddress),
       counterparties: new Set<string>(),
       fee: tx.meta.fee / LAMPORTS_PER_SOL,
     });
@@ -399,6 +410,7 @@ export function finalizeWalletParseAccumulator(
       signature: tx.signature,
       timestamp: tx.timestamp,
       solChange: tx.solChange,
+      walletBalanceAfter: tx.walletBalanceAfter,
       counterparties: [...tx.counterparties],
       fee: tx.fee,
     }))

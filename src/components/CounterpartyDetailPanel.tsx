@@ -72,6 +72,8 @@ function accountTypeLabel(detail: SelectedCounterpartyDetail): string | null {
   return null;
 }
 
+const DETAIL_RECENT_CUTOFF = Math.floor(Date.now() / 1000) - 30 * 86400;
+
 export function CounterpartyDetailPanel({
   detail,
   loading,
@@ -113,7 +115,7 @@ export function CounterpartyDetailPanel({
 
   const typeLabel = accountTypeLabel(detail);
   const inGraph = graphAddresses.has(detail.address);
-  const recentCutoff = Math.floor(Date.now() / 1000) - 30 * 86400;
+  const recentCutoff = DETAIL_RECENT_CUTOFF;
 
   return (
     <div className="scanline relative max-h-[156px] overflow-y-auto border border-border bg-card/90 p-2">

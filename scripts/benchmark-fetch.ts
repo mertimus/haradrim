@@ -86,7 +86,12 @@ interface BenchmarkResult {
 
 let apiCallCount = 0;
 
-async function rpcCall(method: string, params: unknown[]): Promise<any> {
+interface JsonRpcResponse {
+  result?: unknown;
+  error?: unknown;
+}
+
+async function rpcCall(method: string, params: unknown[]): Promise<JsonRpcResponse> {
   apiCallCount++;
   let res: Response;
   try {
@@ -95,8 +100,20 @@ async function rpcCall(method: string, params: unknown[]): Promise<any> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     });
-  } catch (err: any) {
-    console.error(`  [rpcCall] fetch threw: ${err.message} | cause: ${err.cause?.message ?? err.cause ?? "none"} | code: ${err.cause?.code ?? "none"}`);
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    const cause = error.cause;
+    const causeMessage =
+      cause instanceof Error
+        ? cause.message
+        : typeof cause === "object" && cause !== null && "message" in cause
+          ? String((cause as { message?: unknown }).message ?? "none")
+          : String(cause ?? "none");
+    const causeCode =
+      typeof cause === "object" && cause !== null && "code" in cause
+        ? String((cause as { code?: unknown }).code ?? "none")
+        : "none";
+    console.error(`  [rpcCall] fetch threw: ${error.message} | cause: ${causeMessage} | code: ${causeCode}`);
     throw err;
   }
   if (!res.ok) {

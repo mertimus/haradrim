@@ -1,7 +1,5 @@
-import type { RpcTransaction } from "@/api";
-import type { CounterpartyFlow } from "@/lib/parse-transactions";
+import type { CounterpartyFlow, ParsedTransaction } from "@/lib/parse-transactions";
 import type { Edge } from "@xyflow/react";
-import { LAMPORTS_PER_SOL } from "@/lib/constants";
 
 export interface RelapseFrameStats {
   counterparties: number;
@@ -37,21 +35,14 @@ const MAX_NODES_PER_FRAME = 3;
 const MIN_ANIMATION_MS = 3000;
 
 /** Resolve an accountKey to its string pubkey */
-function resolveKey(
-  key: string | { pubkey: string; signer: boolean; writable: boolean },
-): string {
-  return typeof key === "string" ? key : key.pubkey;
-}
-
 /**
  * Build all relapse frames from counterparties and raw transactions.
  * Pure function — no React dependency.
  */
 export function buildRelapseData(
   counterparties: CounterpartyFlow[],
-  rawTxs: RpcTransaction[],
+  rawTxs: ParsedTransaction[],
   edges: Edge[],
-  centerAddress: string,
 ): RelapseData {
   if (counterparties.length === 0) {
     return {
@@ -69,16 +60,16 @@ export function buildRelapseData(
 
   // Sort raw txs by blockTime ascending
   const sortedTxs = [...rawTxs]
-    .filter((tx) => tx.blockTime != null)
-    .sort((a, b) => (a.blockTime ?? 0) - (b.blockTime ?? 0));
+    .filter((tx) => tx.timestamp > 0)
+    .sort((a, b) => a.timestamp - b.timestamp);
 
   const timeStart = Math.min(
     sortedCps[0].firstSeen,
-    sortedTxs.length > 0 ? (sortedTxs[0].blockTime ?? Infinity) : Infinity,
+    sortedTxs.length > 0 ? sortedTxs[0].timestamp : Infinity,
   );
   const timeEnd = Math.max(
     sortedCps[sortedCps.length - 1].lastSeen,
-    sortedTxs.length > 0 ? (sortedTxs[sortedTxs.length - 1].blockTime ?? 0) : 0,
+    sortedTxs.length > 0 ? sortedTxs[sortedTxs.length - 1].timestamp : 0,
   );
 
   // Build edge lookup: counterparty address → edge IDs
@@ -96,17 +87,10 @@ export function buildRelapseData(
   // Compute final wallet balance + total volume from all txs (for stats)
   let finalTxCount = 0;
   let finalVolume = 0;
-  let finalBalance = 0;
+  const finalBalance = sortedTxs.length > 0 ? sortedTxs[sortedTxs.length - 1].walletBalanceAfter : 0;
   for (const tx of sortedTxs) {
     finalTxCount++;
-    const accountKeys = tx.transaction.message.accountKeys.map(resolveKey);
-    const walletIdx = accountKeys.indexOf(centerAddress);
-    if (walletIdx >= 0 && tx.meta) {
-      const pre = tx.meta.preBalances[walletIdx] ?? 0;
-      const post = tx.meta.postBalances[walletIdx] ?? 0;
-      finalVolume += Math.abs(post - pre) / LAMPORTS_PER_SOL;
-      finalBalance = post / LAMPORTS_PER_SOL;
-    }
+    finalVolume += Math.abs(tx.solChange);
   }
 
   // ---- Build raw frames from time-bucketed distribution ----
@@ -135,8 +119,8 @@ export function buildRelapseData(
     const bucketDuration = timeSpan / TIME_BUCKETS;
     const txsPerBucket = new Array<number>(TIME_BUCKETS).fill(0);
 
-    for (const tx of sortedTxs) {
-      const bt = tx.blockTime ?? 0;
+      for (const tx of sortedTxs) {
+      const bt = tx.timestamp;
       let bucket = Math.floor((bt - timeStart) / bucketDuration);
       if (bucket >= TIME_BUCKETS) bucket = TIME_BUCKETS - 1;
       if (bucket < 0) bucket = 0;
@@ -190,7 +174,7 @@ export function buildRelapseData(
     let txPointer = 0;
     let cumulativeTxCount = 0;
     let cumulativeVolume = 0;
-    let walletBalance = 0;
+    let walletBalance = sortedTxs.length > 0 ? sortedTxs[0].walletBalanceAfter - sortedTxs[0].solChange : 0;
     let cumulativeCpCount = 0;
 
     rawFrames = [];
@@ -201,18 +185,12 @@ export function buildRelapseData(
       // Advance tx pointer
       while (txPointer < sortedTxs.length) {
         const tx = sortedTxs[txPointer];
-        const bt = tx.blockTime ?? 0;
+        const bt = tx.timestamp;
         if (bt > frameTimeEnd) break;
 
         cumulativeTxCount++;
-        const accountKeys = tx.transaction.message.accountKeys.map(resolveKey);
-        const wIdx = accountKeys.indexOf(centerAddress);
-        if (wIdx >= 0 && tx.meta) {
-          const pre = tx.meta.preBalances[wIdx] ?? 0;
-          const post = tx.meta.postBalances[wIdx] ?? 0;
-          cumulativeVolume += Math.abs(post - pre) / LAMPORTS_PER_SOL;
-          walletBalance = post / LAMPORTS_PER_SOL;
-        }
+        cumulativeVolume += Math.abs(tx.solChange);
+        walletBalance = tx.walletBalanceAfter;
         txPointer++;
       }
 

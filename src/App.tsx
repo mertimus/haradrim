@@ -2,7 +2,7 @@ import { startTransition, useState, useEffect, useCallback, useMemo, useRef } fr
 import type { Node, Edge } from "@xyflow/react";
 import { SearchBar } from "@/components/SearchBar";
 import { WalletProfile } from "@/components/WalletProfile";
-import { CounterpartyTable, sortCounterparties } from "@/components/CounterpartyTable";
+import { CounterpartyTable } from "@/components/CounterpartyTable";
 import type {
   CounterpartyDisplay,
   TimeRange,
@@ -19,24 +19,18 @@ import { TokenExplorer } from "@/components/TokenExplorer";
 import { TimeRelapse } from "@/components/TimeRelapse";
 import { TraceExplorer } from "@/components/TraceExplorer";
 import {
-  getTransactions,
-  getTransactionsWithProgress,
   getIdentity,
   getBalances,
   getFunding,
 } from "@/api";
-import type { WalletIdentity, WalletBalances, FundingSource, RpcTransaction } from "@/api";
-import { enrichCounterparties } from "@/lib/enrich";
+import type { WalletIdentity, WalletBalances, FundingSource } from "@/api";
 import {
-  parseTransactions,
-  createWalletParseAccumulator,
-  accumulateWalletParseResult,
-  finalizeWalletParseAccumulator,
   buildGraphData,
   buildMergedGraphData,
   countSharedCounterparties,
   getWalletColor,
   projectCounterpartiesForGraphFlow,
+  type ParsedTransaction,
 } from "@/lib/parse-transactions";
 import type {
   CounterpartyFlow,
@@ -44,6 +38,8 @@ import type {
   GraphOverrides,
   GraphFlowFilter,
 } from "@/lib/parse-transactions";
+import { sortCounterparties } from "@/lib/counterparty-sorting";
+import { getWalletAnalysis } from "@/lib/backend-api";
 
 export interface WalletFilter {
   minVolume: number;
@@ -205,8 +201,16 @@ function getAddressFromUrl(): string {
   return params.get("address") ?? "";
 }
 
-function setAddressInUrl(address: string) {
-  window.history.pushState({}, "", `/wallet/${address}`);
+function setModeInUrl(mode: AppMode, address = ""): void {
+  if (mode === "wallet") {
+    window.history.pushState({}, "", address ? `/wallet/${address}` : "/");
+    return;
+  }
+  if (mode === "trace") {
+    window.history.pushState({}, "", address ? `/trace/${address}` : "/trace");
+    return;
+  }
+  window.history.pushState({}, "", `/${mode}`);
 }
 
 function getModeFromUrl(): AppMode {
@@ -231,6 +235,10 @@ export default function App() {
   const [fundingLoading, setFundingLoading] = useState(false);
   const [graphLoading, setGraphLoading] = useState(false);
   const [tableLoading, setTableLoading] = useState(false);
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const [balancesError, setBalancesError] = useState<string | null>(null);
+  const [fundingError, setFundingError] = useState<string | null>(null);
 
   const [identity, setIdentity] = useState<WalletIdentity | null>(null);
   const [balances, setBalances] = useState<WalletBalances | null>(null);
@@ -249,14 +257,18 @@ export default function App() {
   const [graphTypeFilter, setGraphTypeFilter] = useState<GraphTypeFilter>({ wallet: true, token: false, program: false });
   const [graphFlowFilter, setGraphFlowFilter] = useState<GraphFlowFilter>("all");
   const [graphScopeFilter, setGraphScopeFilter] = useState<GraphScopeFilter>("all");
+  const [graphScopeNowTs, setGraphScopeNowTs] = useState(() => Math.floor(Date.now() / 1000));
   const [graphNodeBudget, setGraphNodeBudget] = useState(50);
   const [selectedCounterpartyAddress, setSelectedCounterpartyAddress] = useState<string | null>(null);
   const [tableSortKey, setTableSortKey] = useState<CounterpartySortKey | null>(null);
   const [tableSortDir, setTableSortDir] = useState<CounterpartySortDir>("desc");
-  const [timeRange, setTimeRange] = useState<TimeRange>({ start: null, end: null });
-  const rawTxsRef = useRef<RpcTransaction[]>([]);
+  const rawTxsRef = useRef<ParsedTransaction[]>([]);
+  const allTimeTxsRef = useRef<ParsedTransaction[]>([]);
   const allTimeCounterpartiesRef = useRef<CounterpartyFlow[]>([]);
+  const allTimeLastBlockTimeRef = useRef(0);
   const lookupRequestIdRef = useRef(0);
+  const timeRangeRequestIdRef = useRef(0);
+  const overlayRequestIdsRef = useRef(new Map<string, number>());
 
   // Ref-based hover highlight — no React re-renders, pure DOM manipulation
   const graphWrapperRef = useRef<HTMLDivElement>(null);
@@ -364,6 +376,7 @@ export default function App() {
   );
 
   const handleGraphPresetChange = useCallback((preset: GraphPreset) => {
+    setGraphScopeNowTs(Math.floor(Date.now() / 1000));
     switch (preset) {
       case "overview":
         setGraphFlowFilter("all");
@@ -472,7 +485,6 @@ export default function App() {
 
   const graphSourceCounterparties = graphCounterparties;
   const graphSourceOverlayWallets = graphOverlayWallets;
-  const graphScopeNowTs = useMemo(() => Math.floor(Date.now() / 1000), [graphScopeFilter]);
 
   const sharedGraphAddresses = useMemo(() => {
     const counts = new Map<string, number>();
@@ -563,7 +575,6 @@ export default function App() {
   useEffect(() => {
     if (!address) return;
     if (rankedGraphCounterparties.length === 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setNodes([]);
       setEdges([]);
       return;
@@ -606,6 +617,7 @@ export default function App() {
     graphOverrides,
     effectiveGraphNodeBudget,
     graphRankByAddress,
+    scopedGraphCounterparties,
   ]);
 
   // Merged counterparty table data
@@ -790,16 +802,22 @@ export default function App() {
     }
   }, [sortedMergedCounterparties, selectedCounterpartyAddress]);
 
-  const lookup = useCallback(async (addr: string) => {
-    if (!addr) return;
-    const rid = ++lookupRequestIdRef.current;
+  const applyWalletAnalysis = useCallback((counterpartyData: CounterpartyFlow[], transactions: ParsedTransaction[], count: number, blockTime: number) => {
+    rawTxsRef.current = transactions;
+    startTransition(() => {
+      setCounterparties(counterpartyData);
+      setTxCount(count);
+      setLastBlockTime(blockTime);
+      setTableLoading(false);
+      setGraphLoading(false);
+    });
+  }, []);
 
-    setLoading(true);
-    setIdentityLoading(true);
-    setBalancesLoading(true);
-    setFundingLoading(true);
-    setGraphLoading(true);
-    setTableLoading(true);
+  const resetWalletView = useCallback(() => {
+    lookupRequestIdRef.current += 1;
+    timeRangeRequestIdRef.current += 1;
+    overlayRequestIdsRef.current = new Map();
+    setAddress("");
     setIdentity(null);
     setBalances(null);
     setFunding(null);
@@ -817,19 +835,73 @@ export default function App() {
     setGraphTypeFilter({ wallet: true, token: false, program: false });
     setGraphFlowFilter("all");
     setGraphScopeFilter("all");
-    setTimeRange({ start: null, end: null });
+    setGraphScopeNowTs(Math.floor(Date.now() / 1000));
+    setSelectedCounterpartyAddress(null);
+    setWalletError(null);
+    setIdentityError(null);
+    setBalancesError(null);
+    setFundingError(null);
+    setLoading(false);
+    setIdentityLoading(false);
+    setBalancesLoading(false);
+    setFundingLoading(false);
+    setGraphLoading(false);
+    setTableLoading(false);
+    rawTxsRef.current = [];
+    allTimeTxsRef.current = [];
+    allTimeCounterpartiesRef.current = [];
+    allTimeLastBlockTimeRef.current = 0;
+  }, []);
+
+  const lookup = useCallback(async (addr: string) => {
+    if (!addr) return;
+    const rid = ++lookupRequestIdRef.current;
+    timeRangeRequestIdRef.current += 1;
+
+    setLoading(true);
+    setIdentityLoading(true);
+    setBalancesLoading(true);
+    setFundingLoading(true);
+    setGraphLoading(true);
+    setTableLoading(true);
+    setWalletError(null);
+    setIdentityError(null);
+    setBalancesError(null);
+    setFundingError(null);
+    setIdentity(null);
+    setBalances(null);
+    setFunding(null);
+    setCounterparties([]);
+    setAllTimeCounterparties([]);
+    setTxCount(0);
+    setLastBlockTime(0);
+    setNodes([]);
+    setEdges([]);
+    setOverlayWallets([]);
+    setColorOverrides(new Map());
+    setWalletFilters(new Map());
+    setGraphAdded(new Set());
+    setGraphRemoved(new Set());
+    setGraphTypeFilter({ wallet: true, token: false, program: false });
+    setGraphFlowFilter("all");
+    setGraphScopeFilter("all");
+    setGraphScopeNowTs(Math.floor(Date.now() / 1000));
     setSelectedCounterpartyAddress(null);
     rawTxsRef.current = [];
+    allTimeTxsRef.current = [];
     allTimeCounterpartiesRef.current = [];
+    allTimeLastBlockTimeRef.current = 0;
 
     void getIdentity(addr)
       .then((result) => {
         if (rid !== lookupRequestIdRef.current) return;
         setIdentity(result);
+        setIdentityError(null);
       })
       .catch(() => {
         if (rid !== lookupRequestIdRef.current) return;
         setIdentity(null);
+        setIdentityError("Identity unavailable");
       })
       .finally(() => {
         if (rid === lookupRequestIdRef.current) setIdentityLoading(false);
@@ -839,10 +911,12 @@ export default function App() {
       .then((result) => {
         if (rid !== lookupRequestIdRef.current) return;
         setBalances(result);
+        setBalancesError(null);
       })
       .catch(() => {
         if (rid !== lookupRequestIdRef.current) return;
         setBalances(null);
+        setBalancesError("Balances unavailable");
       })
       .finally(() => {
         if (rid === lookupRequestIdRef.current) setBalancesLoading(false);
@@ -852,115 +926,50 @@ export default function App() {
       .then((result) => {
         if (rid !== lookupRequestIdRef.current) return;
         setFunding(result);
+        setFundingError(null);
       })
       .catch(() => {
         if (rid !== lookupRequestIdRef.current) return;
         setFunding(null);
+        setFundingError("Funding unavailable");
       })
       .finally(() => {
         if (rid === lookupRequestIdRef.current) setFundingLoading(false);
       });
 
-    const accumulator = createWalletParseAccumulator();
-    const seenSignatures = new Set<string>();
-    const uniqueTxs: RpcTransaction[] = [];
-    let maxBlockTime = 0;
-    let lastCommitMs = 0;
-    let surfacedFirstResult = false;
-
-    const commitPartial = (force = false) => {
-      if (rid !== lookupRequestIdRef.current) return;
-      const now = performance.now();
-      if (!force && now - lastCommitMs < 150) return;
-      lastCommitMs = now;
-
-      const partial = finalizeWalletParseAccumulator(accumulator);
-      rawTxsRef.current = [...uniqueTxs];
-      allTimeCounterpartiesRef.current = partial.counterparties;
-
-      startTransition(() => {
-        setAllTimeCounterparties(partial.counterparties);
-        setTxCount(uniqueTxs.length);
-        setLastBlockTime(maxBlockTime);
-        setCounterparties(partial.counterparties);
-        setTableLoading(false);
-        setGraphLoading(false);
-      });
-      if (!surfacedFirstResult) {
-        surfacedFirstResult = true;
-        setLoading(false);
-      }
-    };
-
     try {
-      const txs = await getTransactionsWithProgress(addr, (sliceTxs: RpcTransaction[]) => {
-        if (rid !== lookupRequestIdRef.current) return;
-
-        const uniqueSlice: RpcTransaction[] = [];
-        for (const tx of sliceTxs) {
-          const signature = tx.transaction.signatures[0];
-          if (!signature || seenSignatures.has(signature)) continue;
-          seenSignatures.add(signature);
-          uniqueSlice.push(tx);
-          maxBlockTime = Math.max(maxBlockTime, tx.blockTime ?? 0);
-        }
-
-        if (uniqueSlice.length === 0) return;
-        uniqueTxs.push(...uniqueSlice);
-        accumulateWalletParseResult(accumulator, uniqueSlice, addr);
-        commitPartial();
-      });
-
+      const analysis = await getWalletAnalysis(addr);
       if (rid !== lookupRequestIdRef.current) return;
-
-      if (accumulator.seenSignatures.size !== txs.length) {
-        accumulateWalletParseResult(accumulator, txs, addr);
-        maxBlockTime = txs.reduce(
-          (max: number, tx: RpcTransaction) => Math.max(max, tx.blockTime ?? 0),
-          maxBlockTime,
-        );
-      }
-
-      rawTxsRef.current = txs;
-      const parsed = finalizeWalletParseAccumulator(accumulator);
-      allTimeCounterpartiesRef.current = parsed.counterparties;
-
+      rawTxsRef.current = analysis.transactions;
+      allTimeTxsRef.current = analysis.transactions;
+      allTimeCounterpartiesRef.current = analysis.counterparties;
+      allTimeLastBlockTimeRef.current = analysis.lastBlockTime;
       startTransition(() => {
-        setAllTimeCounterparties(parsed.counterparties);
-        setTxCount(txs.length);
-        setLastBlockTime(maxBlockTime);
-        setCounterparties(parsed.counterparties);
-        setTableLoading(false);
-        setGraphLoading(false);
+        setAllTimeCounterparties(analysis.counterparties);
       });
-
+      applyWalletAnalysis(
+        analysis.counterparties,
+        analysis.transactions,
+        analysis.txCount,
+        analysis.lastBlockTime,
+      );
       setLoading(false);
-
-      void enrichCounterparties(parsed.counterparties)
-        .then((enriched) => {
-          if (rid !== lookupRequestIdRef.current) return;
-          allTimeCounterpartiesRef.current = enriched;
-          startTransition(() => {
-            setAllTimeCounterparties(enriched);
-            setCounterparties(enriched);
-          });
-        })
-        .catch((err) => {
-          console.error("Wallet enrichment failed:", err);
-        });
     } catch (err) {
       if (rid !== lookupRequestIdRef.current) return;
-      console.error("Wallet lookup failed:", err);
+      setWalletError(err instanceof Error ? err.message : "Wallet lookup failed");
       setGraphLoading(false);
       setTableLoading(false);
       setLoading(false);
     }
-  }, []);
+  }, [applyWalletAnalysis]);
 
   const handleAddOverlay = useCallback(
     async (overlayAddr: string) => {
       if (overlayAddr === address) return;
       if (overlayWallets.some((ow) => ow.address === overlayAddr)) return;
+      const walletGeneration = lookupRequestIdRef.current;
+      const requestId = (overlayRequestIdsRef.current.get(overlayAddr) ?? 0) + 1;
+      overlayRequestIdsRef.current.set(overlayAddr, requestId);
 
       // Add loading entry
       const newOverlay: OverlayWallet = {
@@ -972,29 +981,29 @@ export default function App() {
       setOverlayWallets((prev) => [...prev, newOverlay]);
 
       try {
-        // Reuse identity already fetched during enrichment instead of a duplicate getIdentity call
         const existingCp = counterparties.find(c => c.address === overlayAddr)
           ?? overlayWallets.flatMap(ow => ow.counterparties).find(c => c.address === overlayAddr);
         const ident: WalletIdentity | null = existingCp?.label
           ? { address: overlayAddr, name: existingCp.label, label: existingCp.label, category: existingCp.category }
           : null;
-
-        const txResult = await getTransactions(overlayAddr);
-        const { counterparties: cps } = parseTransactions(txResult, overlayAddr);
-        const enriched = await enrichCounterparties(cps);
+        const analysis = await getWalletAnalysis(overlayAddr);
+        if (lookupRequestIdRef.current !== walletGeneration) return;
+        if (overlayRequestIdsRef.current.get(overlayAddr) !== requestId) return;
 
         setOverlayWallets((prev) =>
           prev.map((ow) =>
             ow.address === overlayAddr
-              ? { ...ow, identity: ident, counterparties: enriched, loading: false }
+              ? { ...ow, identity: ident, counterparties: analysis.counterparties, loading: false, error: undefined }
               : ow,
           ),
         );
-      } catch {
+      } catch (err) {
+        if (lookupRequestIdRef.current !== walletGeneration) return;
+        if (overlayRequestIdsRef.current.get(overlayAddr) !== requestId) return;
         setOverlayWallets((prev) =>
           prev.map((ow) =>
             ow.address === overlayAddr
-              ? { ...ow, loading: false, error: "Failed" }
+              ? { ...ow, loading: false, error: err instanceof Error ? err.message : "Failed" }
               : ow,
           ),
         );
@@ -1004,67 +1013,51 @@ export default function App() {
   );
 
   const handleRemoveOverlay = useCallback((overlayAddr: string) => {
+    overlayRequestIdsRef.current.set(
+      overlayAddr,
+      (overlayRequestIdsRef.current.get(overlayAddr) ?? 0) + 1,
+    );
     setOverlayWallets((prev) => prev.filter((ow) => ow.address !== overlayAddr));
   }, []);
 
   const handleTimeRangeChange = useCallback((range: TimeRange) => {
-    setTimeRange(range);
-
     if (range.start == null && range.end == null) {
-      // Restore all-time data
+      rawTxsRef.current = allTimeTxsRef.current;
       setCounterparties(allTimeCounterpartiesRef.current);
-      setTxCount(rawTxsRef.current.length);
+      setTxCount(allTimeTxsRef.current.length);
+      setLastBlockTime(allTimeLastBlockTimeRef.current);
+      setWalletError(null);
       return;
     }
 
-    if (rawTxsRef.current.length === 0) return;
+    const rid = ++timeRangeRequestIdRef.current;
+    setTableLoading(true);
+    setGraphLoading(true);
+    setWalletError(null);
 
-    // Filter raw txs by time range
-    const filtered = rawTxsRef.current.filter(tx => {
-      const bt = tx.blockTime;
-      if (bt == null) return false;
-      if (range.start != null && bt < range.start) return false;
-      if (range.end != null && bt > range.end) return false;
-      return true;
-    });
-
-    setTxCount(filtered.length);
-    const { counterparties: cps } = parseTransactions(filtered, address);
-
-    // Apply enrichment from all-time data (instant, no API calls)
-    const enrichMap = new Map<string, CounterpartyFlow>();
-    for (const cp of allTimeCounterpartiesRef.current) {
-      enrichMap.set(cp.address, cp);
-    }
-
-    const enriched = cps.map(cp => {
-      const prev = enrichMap.get(cp.address);
-      if (!prev) return cp;
-      return {
-        ...cp,
-        label: prev.label,
-        category: prev.category,
-        accountType: prev.accountType,
-        mint: prev.mint,
-        tokenName: prev.tokenName,
-        tokenSymbol: prev.tokenSymbol,
-        tokenLogoUri: prev.tokenLogoUri,
-      };
-    }).filter(cp => {
-      const label = (cp.label ?? "").toLowerCase();
-      if (label.includes("spam") || label.includes("dusting")) return false;
-      const totalVol = cp.solSent + cp.solReceived;
-      if (cp.txCount >= 3 && totalVol < 0.001) return false;
-      return true;
-    });
-
-    setCounterparties(enriched);
-  }, [address]);
+    void getWalletAnalysis(address, range)
+      .then((analysis) => {
+        if (rid !== timeRangeRequestIdRef.current) return;
+        applyWalletAnalysis(
+          analysis.counterparties,
+          analysis.transactions,
+          analysis.txCount,
+          analysis.lastBlockTime,
+        );
+      })
+      .catch((err) => {
+        if (rid !== timeRangeRequestIdRef.current) return;
+        setWalletError(err instanceof Error ? `Failed to refresh filtered view: ${err.message}` : "Failed to refresh filtered view");
+        setTableLoading(false);
+        setGraphLoading(false);
+      });
+  }, [address, applyWalletAnalysis]);
 
   const handleSearch = useCallback(
     (addr: string) => {
+      setMode("wallet");
       setAddress(addr);
-      setAddressInUrl(addr);
+      setModeInUrl("wallet", addr);
       lookup(addr);
     },
     [lookup],
@@ -1085,16 +1078,17 @@ export default function App() {
       if (addr) {
         setAddress(addr);
         lookup(addr);
+      } else {
+        resetWalletView();
       }
     }
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [lookup]);
+  }, [lookup, resetWalletView]);
 
   useEffect(() => {
     const initial = getAddressFromUrl();
     if (initial) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       lookup(initial);
     }
   }, [lookup]);
@@ -1107,30 +1101,8 @@ export default function App() {
           <button
             className="flex items-center gap-1.5 cursor-pointer"
             onClick={() => {
-              setAddress("");
-              setIdentity(null);
-              setBalances(null);
-              setFunding(null);
-              setCounterparties([]);
-              setAllTimeCounterparties([]);
-              setTxCount(0);
-              setLastBlockTime(0);
-              setNodes([]);
-              setEdges([]);
-              setOverlayWallets([]);
-              setColorOverrides(new Map());
-              setWalletFilters(new Map());
-              setGraphAdded(new Set());
-              setGraphRemoved(new Set());
-              setGraphTypeFilter({ wallet: true, token: false, program: false });
-              setGraphFlowFilter("all");
-              setGraphScopeFilter("all");
-              setTimeRange({ start: null, end: null });
-              setSelectedCounterpartyAddress(null);
-              rawTxsRef.current = [];
-              allTimeCounterpartiesRef.current = [];
-              setLoading(false);
-              window.history.pushState({}, "", "/");
+              resetWalletView();
+              setModeInUrl("wallet");
             }}
           >
             <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
@@ -1143,7 +1115,10 @@ export default function App() {
             {(["wallet", "tokens", "trace"] as const).map((m) => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => {
+                  setMode(m);
+                  setModeInUrl(m, m === "wallet" ? address : "");
+                }}
                 className="font-mono text-[9px] uppercase tracking-widest px-2 py-0.5 rounded transition-colors cursor-pointer"
                 style={{
                   color: mode === m ? "#00d4ff" : "#6b7b8d",
@@ -1156,7 +1131,7 @@ export default function App() {
           </nav>
           <div className="flex-1" />
           <div className="w-full max-w-md">
-            <SearchBar onSearch={handleSearch} loading={loading} />
+            <SearchBar key={`${mode}:${address}:header`} onSearch={handleSearch} loading={loading} defaultValue={address} />
           </div>
         </div>
       </header>
@@ -1172,7 +1147,7 @@ export default function App() {
                 Solana Wallet Intelligence
               </p>
               <div className="w-full max-w-md">
-                <SearchBar onSearch={handleSearch} loading={loading} />
+                <SearchBar key={`${mode}:${address}:empty`} onSearch={handleSearch} loading={loading} defaultValue={address} />
               </div>
             </div>
           ) : (
@@ -1188,6 +1163,9 @@ export default function App() {
                   identityLoading={identityLoading}
                   balancesLoading={balancesLoading}
                   fundingLoading={fundingLoading}
+                  identityFailed={Boolean(identityError)}
+                  balancesFailed={Boolean(balancesError)}
+                  fundingFailed={Boolean(fundingError)}
                   counterpartyCount={counterparties.length}
                   txCount={txCount}
                   onNavigate={handleNavigate}
@@ -1203,6 +1181,18 @@ export default function App() {
                   onGraphPresetChange={handleGraphPresetChange}
                 />
               </div>
+
+              {walletError && (
+                <div className="flex-none border-b border-destructive/30 bg-destructive/5 px-3 py-2 flex items-center justify-between gap-3">
+                  <span className="font-mono text-[10px] text-destructive/90">{walletError}</span>
+                  <button
+                    onClick={() => lookup(address)}
+                    className="rounded border border-destructive/40 px-2 py-1 font-mono text-[8px] uppercase tracking-[0.2em] text-destructive transition-colors hover:bg-destructive/10"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
 
               {/* Bottom: graph + table side by side */}
               <div className="flex flex-1 overflow-hidden">
@@ -1243,6 +1233,7 @@ export default function App() {
                   </div>
                   <div className="flex-1 min-h-0 overflow-hidden">
                     <CounterpartyTable
+                      key={`${address}:table`}
                       counterparties={sortedMergedCounterparties}
                       loading={tableLoading}
                       onNavigate={handleNavigate}
@@ -1253,7 +1244,6 @@ export default function App() {
                       onAddNode={handleGraphAddNode}
                       onRemoveNode={handleGraphRemoveNode}
                       onAddOverlay={handleAddOverlay}
-                      timeRange={timeRange}
                       onTimeRangeChange={handleTimeRangeChange}
                       graphFlowFilter={graphFlowFilter}
                       onGraphFlowFilterChange={handleGraphFlowFilterChange}

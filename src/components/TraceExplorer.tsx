@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { TraceGraph } from "@/components/TraceGraph";
 import { getIdentity } from "@/api";
 import type { WalletIdentity } from "@/api";
-import { fetchTraceFlows } from "@/lib/enrich";
+import { getTraceAnalysis } from "@/lib/backend-api";
 import {
   TRACE_ALL_ASSETS,
   DEFAULT_TRACE_FLOW_FILTERS,
@@ -86,6 +86,7 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
   const [edges, setEdges] = useState<Edge[]>([]);
   const [loading, setLoading] = useState(false);
   const [seedIdentity, setSeedIdentity] = useState<WalletIdentity | null>(null);
+  const [traceError, setTraceError] = useState<string | null>(null);
 
   const [selectedNodeAddr, setSelectedNodeAddr] = useState<string | null>(null);
   const [panelLoading, setPanelLoading] = useState(false);
@@ -137,12 +138,10 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
     const inflight = inflightFlowsRef.current.get(address);
     if (inflight) return inflight;
 
-    const request = fetchTraceFlows(address, (data) => {
-      fetchedFlowsRef.current.set(address, data);
-      publishFlowUpdate(address, data);
-    })
+    const request = getTraceAnalysis(address)
       .then((data) => {
         fetchedFlowsRef.current.set(address, data);
+        publishFlowUpdate(address, data);
         return data;
       })
       .finally(() => {
@@ -163,6 +162,7 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
     setNodes([]);
     setEdges([]);
     setLoading(true);
+    setTraceError(null);
     clearPanelSubscription();
     setSelectedNodeAddr(null);
     setPanelData(null);
@@ -189,7 +189,9 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
       setNodes(graph.nodes);
       setEdges(graph.edges);
     } catch (err) {
-      console.error("Trace failed:", err);
+      if (rid === requestIdRef.current) {
+        setTraceError(err instanceof Error ? err.message : "Trace failed");
+      }
     } finally {
       if (rid === requestIdRef.current) setLoading(false);
     }
@@ -279,6 +281,7 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
     setNodes([]);
     setEdges([]);
     setLoading(false);
+    setTraceError(null);
     clearPanelSubscription();
     setSelectedNodeAddr(null);
     setPanelData(null);
@@ -371,6 +374,11 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
             </button>
           </div>
         </form>
+        {traceError && (
+          <div className="rounded border border-destructive/30 bg-destructive/5 px-3 py-2 font-mono text-[10px] text-destructive/90">
+            {traceError}
+          </div>
+        )}
       </div>
     );
   }
@@ -419,6 +427,20 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
           )}
         </div>
       </div>
+
+      {traceError && (
+        <div className="flex-none border-b border-destructive/30 bg-destructive/5 px-3 py-2 flex items-center justify-between gap-3">
+          <span className="font-mono text-[10px] text-destructive/90">{traceError}</span>
+          {seedAddress && (
+            <button
+              onClick={() => startTrace(seedAddress)}
+              className="rounded border border-destructive/40 px-2 py-1 font-mono text-[8px] uppercase tracking-[0.2em] text-destructive transition-colors hover:bg-destructive/10"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 overflow-hidden">

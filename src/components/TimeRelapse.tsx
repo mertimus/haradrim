@@ -1,14 +1,13 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { Edge } from "@xyflow/react";
-import type { RpcTransaction } from "@/api";
-import type { CounterpartyFlow } from "@/lib/parse-transactions";
+import type { CounterpartyFlow, ParsedTransaction } from "@/lib/parse-transactions";
 import { buildRelapseData } from "@/lib/relapse-engine";
 import type { RelapseData } from "@/lib/relapse-engine";
 
 interface TimeRelapseProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
   counterparties: CounterpartyFlow[];
-  rawTxs: RpcTransaction[];
+  rawTxs: ParsedTransaction[];
   edges: Edge[];
   centerAddress: string;
 }
@@ -51,19 +50,25 @@ export function TimeRelapse({
   const startupTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const speedRef = useRef<Speed>(1);
   const stateRef = useRef<PlaybackState>("idle");
-
-  // Keep refs in sync
-  speedRef.current = speed;
-  stateRef.current = state;
+  const advanceRef = useRef<(frameIndex: number) => void>(() => {});
 
   // Pre-compute relapse data when inputs change
   const relapseData = useMemo(() => {
     if (counterparties.length === 0) return null;
-    return buildRelapseData(counterparties, rawTxs, edges, centerAddress);
-  }, [counterparties, rawTxs, edges, centerAddress]);
+    return buildRelapseData(counterparties, rawTxs, edges);
+  }, [counterparties, rawTxs, edges]);
 
-  // Store in ref for timeout callbacks
-  relapseDataRef.current = relapseData;
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    relapseDataRef.current = relapseData;
+  }, [relapseData]);
 
   const cleanup = useCallback(() => {
     const container = containerRef.current;
@@ -98,8 +103,7 @@ export function TimeRelapse({
     return () => {
       abort();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [centerAddress]);
+  }, [abort, centerAddress]);
 
   // If counterparties change while playing (new wallet loaded), abort
   const counterpartiesRef = useRef(counterparties);
@@ -107,7 +111,10 @@ export function TimeRelapse({
     if (counterpartiesRef.current !== counterparties) {
       counterpartiesRef.current = counterparties;
       if (stateRef.current !== "idle") {
-        abort();
+        const timeoutId = setTimeout(() => {
+          abort();
+        }, 0);
+        return () => clearTimeout(timeoutId);
       }
     }
   }, [counterparties, abort]);
@@ -185,8 +192,12 @@ export function TimeRelapse({
     }
 
     const frameDuration = data.frames[fi].durationMs / speedRef.current;
-    timeoutRef.current = setTimeout(() => advance(nextFi), frameDuration);
+    timeoutRef.current = setTimeout(() => advanceRef.current(nextFi), frameDuration);
   }, [applyFrame]);
+
+  useEffect(() => {
+    advanceRef.current = advance;
+  }, [advance]);
 
   const startPlayback = useCallback(() => {
     const container = containerRef.current;
