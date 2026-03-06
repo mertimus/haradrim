@@ -1,6 +1,7 @@
 import {
   FETCH_TIMEOUT_MS,
   GTFA_SIGNATURE_PAGE_LIMIT,
+  GTFA_FULL_PAGE_LIMIT,
   GTFA_TOKEN_ACCOUNTS_MODE,
   HELIUS_API_KEY,
   HELIUS_API_ORIGIN,
@@ -156,7 +157,7 @@ async function gtfaPage(address, opts = {}) {
   const params = {
     transactionDetails: "full",
     sortOrder: opts.sortOrder ?? "asc",
-    limit: 1000,
+    limit: GTFA_FULL_PAGE_LIMIT,
     commitment: "confirmed",
     encoding: "jsonParsed",
     maxSupportedTransactionVersion: 0,
