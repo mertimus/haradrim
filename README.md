@@ -60,14 +60,25 @@ Required backend envs:
 Optional backend envs:
 
 - `HELIUS_API_KEY`
+- `SESSION_SECRET`
+- `SESSION_COOKIE_NAME`
+- `SESSION_WINDOW_MS`
+- `SESSION_BUDGET_UNITS`
+- `IP_WINDOW_MS`
+- `IP_BUDGET_UNITS`
 - `CACHE_MAX_ENTRIES`
 - `CACHE_MAX_BODY_BYTES`
+- `REQUEST_BODY_LIMIT_BYTES`
+- `JSON_PROXY_BODY_LIMIT_BYTES`
 - `FETCH_TIMEOUT_MS`
 - `PROXY_TTL_MS`
 - `WALLET_ANALYSIS_TTL_MS`
 - `TRACE_ANALYSIS_TTL_MS`
 - `MAX_SLICE_CONCURRENCY`
 - `MAX_ACCOUNT_TYPE_CONCURRENCY`
+- `MAX_WALLET_ANALYSIS_CONCURRENCY`
+- `MAX_TRACE_ANALYSIS_CONCURRENCY`
+- `MAX_GTFA_RPC_CONCURRENCY`
 
 Optional frontend envs:
 
@@ -75,6 +86,27 @@ Optional frontend envs:
 - `VITE_PUBLIC_ORIGIN`
 
 No `VITE_*` secrets should be used.
+
+## Heavy Route Protection
+
+Heavy GTFA-based routes are now guarded server-side:
+
+- `GET /api/wallets/:address/analysis`
+- `GET /api/traces/:address/flows`
+- `POST /api/helius-rpc` only when the RPC method is `getTransactionsForAddress`
+
+Current protections:
+
+- signed anonymous session cookie
+- weighted heavy-request budgets per session and per IP
+- per-route concurrency caps
+- request body limits
+- explicit allowlists for public proxy paths and RPC methods
+- stripped proxy headers instead of broad header forwarding
+
+Lightweight enrichment calls are intentionally not budgeted in this phase.
+
+GTFA requests from the frontend now always go through the backend proxy, even if `VITE_PUBLIC_HELIUS_RPC_URL` is set for lightweight browser-side reads.
 
 ## Quality Checks
 
@@ -95,16 +127,11 @@ The intended phase-1 topology is:
 
 Keep the API single-instance for now because cache is process-local.
 
-## Deferred Hardening
+## Remaining Edge Work
 
-The most important deferred production task is backend proxy hardening. It was intentionally left for a follow-up pass because it is broader than the current backend migration.
+The backend-side guardrails are in place, but two external pieces are still pending for a production-facing rollout:
 
-Come back to item `1` before public launch:
+- put the app behind a Cloudflare-proxied custom domain
+- add Cloudflare WAF / rate-limit / Turnstile rules on the heavy routes
 
-- request auth / abuse controls
-- rate limiting
-- body size limits
-- upstream timeouts and cancellation review
-- strict header allowlist instead of broad header forwarding
-
-The backend is usable for internal/private deployment now, but that hardening pass should happen before open internet exposure at scale.
+Those are outside this repo and should be layered on top of the backend controls here.

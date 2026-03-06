@@ -16,5 +16,6 @@ export const HELIUS_RPC_URL = resolveHeliusRpcUrl(
   import.meta.env.VITE_PUBLIC_HELIUS_RPC_URL as string | undefined,
   API_BASE_URL,
 );
+export const HELIUS_GTFA_RPC_URL = `${API_BASE_URL}/helius-rpc`;
 export const HELIUS_WALLET_API_BASE = `${API_BASE_URL}/helius-api/v1/wallet`;
 export const BIRDEYE_API_BASE = `${API_BASE_URL}/birdeye-api`;

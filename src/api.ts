@@ -5,7 +5,7 @@ import {
   reverseLookupBatch,
 } from "@bonfida/spl-name-service";
 import { cached, cacheGet, cacheSet } from "@/lib/cache";
-import { HELIUS_RPC_URL, HELIUS_WALLET_API_BASE } from "@/lib/constants";
+import { HELIUS_GTFA_RPC_URL, HELIUS_RPC_URL, HELIUS_WALLET_API_BASE } from "@/lib/constants";
 
 // TTLs
 const TTL_TX = 10 * 60 * 1000;       // 10 min — transactions (heaviest)
@@ -17,6 +17,7 @@ const TTL_SNS = 30 * 60 * 1000;       // 30 min
 const TTL_ACCOUNT_TYPE = 60 * 60 * 1000; // 1 hour
 
 const RPC_URL = HELIUS_RPC_URL;
+const GTFA_RPC_URL = HELIUS_GTFA_RPC_URL;
 const WALLET_API = HELIUS_WALLET_API_BASE;
 
 const connection = new Connection(RPC_URL);
@@ -194,7 +195,7 @@ export async function gtfaPage(
 
     let res: Response;
     try {
-      res = await fetchWithTimeout(RPC_URL, {
+      res = await fetchWithTimeout(GTFA_RPC_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -269,7 +270,7 @@ async function gtfaSignaturePage(
 
     let res: Response;
     try {
-      res = await fetchWithTimeout(RPC_URL, {
+      res = await fetchWithTimeout(GTFA_RPC_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

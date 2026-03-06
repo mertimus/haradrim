@@ -29,6 +29,10 @@ export function getCachedValue(key) {
   return entry.value;
 }
 
+export function getInflightValue(key) {
+  return inflight.get(key) ?? null;
+}
+
 export function setCachedValue(key, value, ttlMs) {
   if (ttlMs <= 0) return;
   pruneCache();
