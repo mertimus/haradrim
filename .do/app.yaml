@@ -31,7 +31,8 @@ services:
     envs:
       - key: HELIUS_RPC_URL
         scope: RUN_TIME
-        value: REPLACE_WITH_HELIUS_RPC_URL
+        type: SECRET
+        value: REPLACE_WITH_BACKEND_HELIUS_RPC_URL
       - key: HELIUS_API_KEY
         scope: RUN_TIME
         type: SECRET
@@ -78,4 +79,4 @@ static_sites:
     envs:
       - key: VITE_PUBLIC_HELIUS_RPC_URL
         scope: BUILD_TIME
-        value: REPLACE_WITH_HELIUS_RPC_URL
+        value: REPLACE_WITH_FRONTEND_HELIUS_RPC_URL

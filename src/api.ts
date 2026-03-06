@@ -134,7 +134,7 @@ const MAX_METADATA_FETCH_CONCURRENCY = 4;
 const MAX_ACCOUNT_TYPE_CONCURRENCY = 8;
 const FETCH_TIMEOUT_MS = 15_000;
 const GTFA_SIGNATURE_PAGE_LIMIT = 1000;
-const GTFA_FULL_PAGE_LIMIT = 100;
+const GTFA_FULL_PAGE_LIMIT = 1000;
 // Empirically, GTFA full-range pagination remains correct at this slice density
 // on wallets where a 1000-tx target starts dropping history.
 const TARGET_GTFA_TXS_PER_SLICE = 700;

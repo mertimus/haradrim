@@ -46,7 +46,7 @@ export const TRACE_ANALYSIS_TTL_MS = Number(process.env.TRACE_ANALYSIS_TTL_MS ??
 
 export const GTFA_TOKEN_ACCOUNTS_MODE = "balanceChanged";
 export const GTFA_SIGNATURE_PAGE_LIMIT = 1000;
-export const GTFA_FULL_PAGE_LIMIT = Number(process.env.GTFA_FULL_PAGE_LIMIT ?? 100);
+export const GTFA_FULL_PAGE_LIMIT = Number(process.env.GTFA_FULL_PAGE_LIMIT ?? 1000);
 export const TARGET_GTFA_TXS_PER_SLICE = 700;
 export const MAX_TRANSACTION_SLICES = 64;
 export const MAX_SLICE_CONCURRENCY = Number(process.env.MAX_SLICE_CONCURRENCY ?? 16);

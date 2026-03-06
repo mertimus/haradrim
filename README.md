@@ -87,6 +87,11 @@ Optional frontend envs:
 
 No `VITE_*` secrets should be used.
 
+Recommended RPC split:
+
+- `HELIUS_RPC_URL`: mainnet Helius RPC URL with the backend API key for GTFA-heavy server-side history fetches
+- `VITE_PUBLIC_HELIUS_RPC_URL`: fast public/lightweight frontend RPC URL for browser-side reads only
+
 ## Heavy Route Protection
 
 Heavy GTFA-based routes are now guarded server-side:
