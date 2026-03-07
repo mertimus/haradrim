@@ -21,7 +21,6 @@ import {
   forceManyBody,
   forceCenter,
   forceCollide,
-  forceRadial,
   forceX,
   forceY,
   type SimulationNodeDatum,
@@ -578,6 +577,8 @@ interface ForceNode extends SimulationNodeDatum {
   nodeSize: number;
   hubX?: number;
   hubY?: number;
+  anchorX?: number;
+  anchorY?: number;
 }
 
 interface ForceLink extends SimulationLinkDatum<ForceNode> {
@@ -592,6 +593,56 @@ function logScale(value: number, max: number, minOut: number, maxOut: number): n
   if (max <= 0) return minOut;
   const norm = Math.log1p(value) / Math.log1p(max);
   return minOut + norm * (maxOut - minOut);
+}
+
+function dominantFlowDirection(cp: Pick<CounterpartyFlow, "solSent" | "solReceived">): "inflow" | "outflow" {
+  return cp.solSent > cp.solReceived ? "outflow" : "inflow";
+}
+
+function interpolateAngle(index: number, total: number, startDeg: number, endDeg: number): number {
+  const start = (startDeg * Math.PI) / 180;
+  const end = (endDeg * Math.PI) / 180;
+  if (total <= 1) return (start + end) / 2;
+  const t = index / (total - 1);
+  return start + (end - start) * t;
+}
+
+function buildSingleWalletAnchorMap(
+  counterparties: CounterpartyFlow[],
+  maxVolume: number,
+  maxTx: number,
+): Map<string, { x: number; y: number }> {
+  const anchorMap = new Map<string, { x: number; y: number }>();
+  const outflows = counterparties.filter((cp) => dominantFlowDirection(cp) === "outflow");
+  const inflows = counterparties.filter((cp) => dominantFlowDirection(cp) === "inflow");
+
+  const assignArc = (
+    items: CounterpartyFlow[],
+    startDeg: number,
+    endDeg: number,
+  ) => {
+    items.forEach((cp, index) => {
+      const volume = cp.solSent + cp.solReceived;
+      const importance = (volume / maxVolume) * 0.6 + (cp.txCount / maxTx) * 0.4;
+      const radius = logScale(1 - importance, 1, 165, 355);
+      const angle = interpolateAngle(index, items.length, startDeg, endDeg);
+      anchorMap.set(cp.address, {
+        x: Math.cos(angle) * radius,
+        y: Math.sin(angle) * radius,
+      });
+    });
+  };
+
+  if (outflows.length > 0 && inflows.length > 0) {
+    assignArc(outflows, 110, 250);
+    assignArc(inflows, -70, 70);
+  } else if (outflows.length > 0) {
+    assignArc(outflows, 100, 260);
+  } else {
+    assignArc(inflows, -80, 80);
+  }
+
+  return anchorMap;
 }
 
 export interface GraphOverrides {
@@ -647,6 +698,8 @@ export function buildGraphData(
     cpSizes.set(cp.address, logScale(importance, 1, NODE_MIN, NODE_MAX));
   }
 
+  const anchorMap = buildSingleWalletAnchorMap(top50, maxVolume, maxTx);
+
   // Build force simulation nodes
   const simNodes: ForceNode[] = [
     {
@@ -660,11 +713,14 @@ export function buildGraphData(
     ...top50.map((cp) => {
       const volume = cp.solSent + cp.solReceived;
       const importance = (volume / maxVolume) * 0.6 + (cp.txCount / maxTx) * 0.4;
+      const anchor = anchorMap.get(cp.address);
       return {
         id: cp.address,
         isCenter: false,
         importance,
         nodeSize: cpSizes.get(cp.address) ?? NODE_MIN,
+        anchorX: anchor?.x,
+        anchorY: anchor?.y,
       };
     }),
   ];
@@ -698,15 +754,12 @@ export function buildGraphData(
       forceCollide<ForceNode>().radius((d) => d.nodeSize * 0.55 + 15).strength(0.8),
     )
     .force(
-      "radial",
-      forceRadial<ForceNode>(
-        (d) => {
-          if (d.isCenter) return 0;
-          return logScale(1 - d.importance, 1, 150, 350);
-        },
-        0,
-        0,
-      ).strength((d) => (d.isCenter ? 0 : 0.5)),
+      "anchorX",
+      forceX<ForceNode>((d) => d.anchorX ?? 0).strength((d) => (d.isCenter ? 0 : 0.42)),
+    )
+    .force(
+      "anchorY",
+      forceY<ForceNode>((d) => d.anchorY ?? 0).strength((d) => (d.isCenter ? 0 : 0.42)),
     )
     .stop();
 
