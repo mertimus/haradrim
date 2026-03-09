@@ -38,6 +38,7 @@ interface WalletNodeData {
   tokenSymbol?: string;
   tokenLogoUri?: string;
   connectedWalletColors?: string[];
+  layoutMode?: "single-wallet" | "multi-wallet";
   [key: string]: unknown;
 }
 
@@ -74,6 +75,19 @@ function colorToRgb(hex: string): string {
 
 // Invisible handle shared by all nodes
 const HIDDEN_HANDLE_CLASS = "!opacity-0 !pointer-events-none !w-0 !h-0";
+const CENTER_HANDLE_CLASS = "!opacity-0 !pointer-events-none";
+const CENTER_HANDLE_STYLE = {
+  left: "50%",
+  top: "50%",
+  right: "auto",
+  bottom: "auto",
+  width: 1,
+  height: 1,
+  opacity: 0,
+  border: "none",
+  background: "transparent",
+  transform: "translate(-50%, -50%)",
+} as const;
 
 /**
  * WalletNode — wrapped in React.memo to prevent re-rendering when other nodes change.
@@ -91,7 +105,12 @@ const WalletNode = memo(function WalletNode({ data }: NodeProps<Node<WalletNodeD
     const hubLabel = d.walletIndex != null && d.walletIndex > 0 ? "Overlay" : "Target";
     return (
       <>
-        <Handle type="target" position={Position.Left} className={HIDDEN_HANDLE_CLASS} />
+        <Handle
+          type="target"
+          position={Position.Left}
+          className={CENTER_HANDLE_CLASS}
+          style={CENTER_HANDLE_STYLE}
+        />
         <div
           className="center-node-pulse relative flex flex-col items-center justify-center"
           style={{
@@ -100,7 +119,8 @@ const WalletNode = memo(function WalletNode({ data }: NodeProps<Node<WalletNodeD
             border: `2px solid ${color}`,
             outline: `2px solid rgba(${rgb}, 0.3)`,
             outlineOffset: 2,
-            backgroundColor: `rgba(${rgb}, 0.1)`,
+            backgroundColor: "#0d1321",
+            boxShadow: `0 0 0 1px rgba(${rgb}, 0.18) inset`,
             padding: "8px 6px",
           }}
         >
@@ -132,7 +152,12 @@ const WalletNode = memo(function WalletNode({ data }: NodeProps<Node<WalletNodeD
             {truncAddr(d.address)}
           </div>
         </div>
-        <Handle type="source" position={Position.Right} className={HIDDEN_HANDLE_CLASS} />
+        <Handle
+          type="source"
+          position={Position.Right}
+          className={CENTER_HANDLE_CLASS}
+          style={CENTER_HANDLE_STYLE}
+        />
       </>
     );
   }
@@ -143,6 +168,7 @@ const WalletNode = memo(function WalletNode({ data }: NodeProps<Node<WalletNodeD
   const size = d.nodeSize;
   const tier = d.tier;
   const acctType = d.accountType;
+  const isSingleWalletLayout = d.layoutMode === "single-wallet";
   const vol = d.volume;
   const volStr = vol >= 1000 ? `${(vol / 1000).toFixed(1)}k` : vol >= 1 ? vol.toFixed(1) : vol >= 0.01 ? vol.toFixed(2) : "<0.01";
   const connectedColors = d.connectedWalletColors;
@@ -181,6 +207,45 @@ const WalletNode = memo(function WalletNode({ data }: NodeProps<Node<WalletNodeD
       ))}
     </div>
   ) : null;
+
+  if (isSingleWalletLayout) {
+    return (
+      <>
+        <Handle type="target" position={Position.Left} className={HIDDEN_HANDLE_CLASS} />
+        <div className="relative">
+          <div
+            className="node-shape flex flex-col items-center justify-center"
+            data-tier={2}
+            style={{
+              ...cssVars,
+              width: size,
+              borderRadius: 4,
+              border: "1px solid rgba(107, 123, 141, 0.65)",
+              backgroundColor: "rgba(13, 19, 33, 0.96)",
+              overflow: "hidden",
+              padding: "6px 6px",
+            }}
+          >
+            {d.label ? (
+              <div
+                className="truncate font-mono text-[9px] font-bold leading-tight text-center text-foreground"
+                style={{ maxWidth: size - 16 }}
+              >
+                {d.label}
+              </div>
+            ) : null}
+            <div className="font-mono text-[9px] text-muted-foreground leading-tight">
+              {truncAddr(d.address)}
+            </div>
+            <div className="font-mono text-[8px] leading-tight mt-0.5">
+              <span className="text-foreground">{d.txCount} tx</span>
+            </div>
+          </div>
+        </div>
+        <Handle type="source" position={Position.Right} className={HIDDEN_HANDLE_CLASS} />
+      </>
+    );
+  }
 
   if (acctType === "token") {
     const tokenDisplay = d.tokenSymbol ?? d.tokenName;
@@ -278,6 +343,7 @@ interface FlowEdgeData {
   txCount: number;
   isOutflow: boolean;
   thickness: number;
+  intensity?: number;
   volume: number;
   maxVolume: number;
   [key: string]: unknown;
@@ -316,8 +382,7 @@ const FlowEdge = memo(function FlowEdge({
   });
 
   const strokeColor = d.isOutflow ? "#ff2d2d" : "#00ff88";
-  const volNorm = d.maxVolume > 0 ? d.volume / d.maxVolume : 0;
-  const opacity = 0.3 + volNorm * 0.5;
+  const opacity = 0.18 + Math.min(Math.max(d.intensity ?? 0, 0), 1) * 0.72;
 
   return (
     <g className="flow-edge-group"
@@ -328,7 +393,7 @@ const FlowEdge = memo(function FlowEdge({
       <BaseEdge id={id} path={edgePath} style={{
         stroke: strokeColor,
         strokeWidth: d.thickness,
-        strokeDasharray: "8 4",
+        strokeLinecap: "round",
       }} />
       {/* Tooltip — always rendered, CSS toggles opacity on .flow-edge-group:hover */}
       <foreignObject x={labelX - 55} y={labelY - 30} width={110} height={60}
@@ -352,7 +417,7 @@ const edgeTypes = { flowEdge: FlowEdge };
 
 // ---- Static config objects (hoisted to avoid re-creation on every render) ----
 
-const FIT_VIEW_OPTIONS = { padding: 0.15, maxZoom: 1.2 } as const;
+const FIT_VIEW_OPTIONS = { padding: 0.06, maxZoom: 1.7 } as const;
 const PRO_OPTIONS = { hideAttribution: true } as const;
 
 // ---- Graph container ----
@@ -393,16 +458,14 @@ export function TransactionGraph({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
   useEffect(() => {
-    setNodes((currentNodes) => {
-      const currentPosMap = new Map(currentNodes.map((n) => [n.id, n.position]));
-      return propNodes.map((n) => {
-        const existing = currentPosMap.get(n.id);
+    setNodes(
+      propNodes.map((n) => {
         const className = n.id === selectedAddress
           ? `${n.className ?? ""} wallet-node-selected`.trim()
           : n.className;
-        return existing ? { ...n, className, position: existing } : { ...n, className };
-      });
-    });
+        return { ...n, className };
+      }),
+    );
   }, [propNodes, selectedAddress, setNodes]);
 
   useEffect(() => {
@@ -643,7 +706,7 @@ export function TransactionGraph({
             Navigate
           </button>
 
-          {/* Add to Graph */}
+          {/* Add to Compare */}
           {!contextMenu.isHub && (
             <button
               onClick={() => { if (!canAddOverlay) return; onAddOverlay(contextMenu.address); setContextMenu(null); }}
@@ -658,7 +721,7 @@ export function TransactionGraph({
               onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "none"; }}
             >
               <span style={{ fontSize: 13 }}>+</span>
-              Add to Graph
+              Add to Compare
             </button>
           )}
 

@@ -13,7 +13,7 @@ const TOKEN_PROGRAM_IDS = new Set([
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
 ]);
-const NATIVE_SOL_ASSET_ID = "native:sol";
+export const NATIVE_SOL_ASSET_ID = "native:sol";
 
 const KNOWN_PROGRAMS = new Set([
   "11111111111111111111111111111111",
@@ -33,6 +33,26 @@ const KNOWN_PROGRAMS = new Set([
   "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
   "auth9SigNpDKz4sJJ1DfCTuZrZNSAgh9sFD3rboVmgg",
   "namesLPneVptA9Z5rqUDD9tMTWEJwofgaYwp8cawRkX",
+]);
+
+const IGNORED_TX_PROGRAM_IDS = new Set([
+  SYSTEM_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  ...TOKEN_PROGRAM_IDS,
+  "ComputeBudget111111111111111111111111111111",
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+  "Memo1UhkJBfCR6MNLc4u1mfLsJgGT2ciczyG5hXVfHi",
+]);
+
+const PROGRAM_LABELS = new Map([
+  ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "Jupiter V6"],
+  ["whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc", "Orca Whirlpool"],
+  ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", "Raydium AMM"],
+  ["CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK", "Raydium CLMM"],
+  ["srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX", "OpenBook"],
+  ["auth9SigNpDKz4sJJ1DfCTuZrZNSAgh9sFD3rboVmgg", "Squads V4"],
+  ["metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s", "Metaplex"],
+  ["namesLPneVptA9Z5rqUDD9tMTWEJwofgaYwp8cawRkX", "SNS"],
 ]);
 
 function resolveKey(key) {
@@ -69,7 +89,7 @@ function getInstructionInfoBigInt(instruction, key) {
   return undefined;
 }
 
-function bigintToUiAmount(rawAmount, decimals) {
+export function bigintToUiAmount(rawAmount, decimals) {
   if (decimals <= 0) return Number(rawAmount);
   const negative = rawAmount < 0n;
   const value = negative ? -rawAmount : rawAmount;
@@ -179,7 +199,42 @@ function walletPostBalance(tx, walletAddress) {
   return post / LAMPORTS_PER_SOL;
 }
 
-function parseTraceTransferEvents(txs, walletAddress) {
+function prettifyProgramName(name) {
+  return name
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b[a-z]/g, (match) => match.toUpperCase());
+}
+
+function collectTransactionPrograms(tx) {
+  const programs = new Map();
+
+  for (const instruction of flattenInstructions(tx)) {
+    const programId = instruction.programId ?? "";
+    const programName = typeof instruction.program === "string" ? instruction.program : "";
+    if (programId && IGNORED_TX_PROGRAM_IDS.has(programId)) continue;
+    if (!programId && (!programName || programName === "system")) continue;
+
+    const label =
+      (programId ? PROGRAM_LABELS.get(programId) : undefined)
+      ?? (programName && !["system", "spl-token", "spl-associated-token-account"].includes(programName)
+        ? prettifyProgramName(programName)
+        : "")
+      ?? "";
+
+    const key = programId || programName;
+    if (!key || programs.has(key)) continue;
+    programs.set(key, {
+      id: key,
+      label: label || `${key.slice(0, 4)}...${key.slice(-4)}`,
+    });
+  }
+
+  return [...programs.values()];
+}
+
+export function parseTraceTransferEvents(txs, walletAddress) {
   const events = [];
 
   for (const tx of txs) {
@@ -328,6 +383,8 @@ function parseTransactions(txs, walletAddress) {
       solChange: walletSolChange(tx, walletAddress),
       walletBalanceAfter: walletPostBalance(tx, walletAddress),
       counterparties: new Set(),
+      transfers: [],
+      programs: collectTransactionPrograms(tx),
       fee: (tx.meta?.fee ?? 0) / LAMPORTS_PER_SOL,
     });
     freshTxs.push(tx);
@@ -358,6 +415,15 @@ function parseTransactions(txs, walletAddress) {
 
     const txEntry = transactions.get(event.signature);
     txEntry?.counterparties.add(event.counterparty);
+    txEntry?.transfers.push({
+      counterparty: event.counterparty,
+      direction: event.direction,
+      kind: event.kind,
+      assetId: event.assetId,
+      mint: event.mint,
+      decimals: event.decimals,
+      uiAmount: event.uiAmount,
+    });
   }
 
   return {
@@ -369,6 +435,8 @@ function parseTransactions(txs, walletAddress) {
         solChange: tx.solChange,
         walletBalanceAfter: tx.walletBalanceAfter,
         counterparties: [...tx.counterparties],
+        transfers: tx.transfers,
+        programs: tx.programs,
         fee: tx.fee,
       }))
       .sort((a, b) => b.timestamp - a.timestamp),
@@ -419,6 +487,30 @@ async function enrichCounterparties(counterparties) {
       if (cp.txCount >= 3 && totalVol < 0.001) return false;
       return true;
     });
+}
+
+async function enrichWalletTransactions(transactions) {
+  const mints = [...new Set(
+    transactions.flatMap((tx) => tx.transfers.map((transfer) => transfer.mint).filter(Boolean)),
+  )].slice(0, 400);
+  const tokenMetaMap = mints.length > 0
+    ? await getTokenMetadataBatch(mints).catch(() => new Map())
+    : new Map();
+
+  return transactions.map((tx) => ({
+    ...tx,
+    transfers: tx.transfers.map((transfer) => {
+      const meta = transfer.assetId === NATIVE_SOL_ASSET_ID
+        ? { symbol: "SOL", name: "Native SOL" }
+        : (transfer.mint ? tokenMetaMap.get(transfer.mint) : undefined);
+      return {
+        ...transfer,
+        symbol: meta?.symbol ?? transfer.symbol,
+        name: meta?.name ?? transfer.name,
+        logoUri: meta?.logoUri ?? transfer.logoUri,
+      };
+    }),
+  }));
 }
 
 function collectTraceAssetOptions(events) {
@@ -555,13 +647,16 @@ async function analyzeTraceEvents(address, txs) {
 export async function analyzeWallet(address, range = {}) {
   const txs = await fetchTransactions(address, range);
   const parsed = parseTransactions(txs, address);
-  const counterparties = await enrichCounterparties(parsed.counterparties);
+  const [counterparties, transactions] = await Promise.all([
+    enrichCounterparties(parsed.counterparties),
+    enrichWalletTransactions(parsed.transactions),
+  ]);
   const lastBlockTime = txs.reduce((max, tx) => Math.max(max, tx.blockTime ?? 0), 0);
 
   return {
     address,
     counterparties,
-    transactions: parsed.transactions,
+    transactions,
     txCount: txs.length,
     lastBlockTime,
   };

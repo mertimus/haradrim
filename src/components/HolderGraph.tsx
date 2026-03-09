@@ -20,10 +20,12 @@ import {
   type HolderTier,
 } from "@/lib/parse-holders";
 import { ConnectionEdge } from "@/components/ConnectionEdge";
+import { EvidenceEdge } from "@/components/EvidenceEdge";
 import { FunderNode, IntermediateNode, FundingEdge } from "@/components/FundingNodes";
 import type { HolderCluster } from "@/lib/scan-holder-connections";
 import type { FundingNode } from "@/lib/funding-walk";
 import type { BundleGroup } from "@/lib/bundle-scan";
+import type { SuspiciousCluster } from "@/lib/suspicious-clusters";
 
 // ---- Helpers ----
 
@@ -56,6 +58,8 @@ interface BubbleNodeData {
   color?: string;
   nodeSize: number;
   inCluster?: boolean;
+  outOfScope?: boolean;
+  suppressTierPulse?: boolean;
   [key: string]: unknown;
 }
 
@@ -126,7 +130,7 @@ const BubbleNode = memo(function BubbleNode({
         ? `${pct.toFixed(2)}%`
         : "<0.01%";
   // Whale pulse only in tier mode, not in cluster mode
-  const isWhale = d.tier === "whale" && !d.inCluster;
+  const isWhale = d.tier === "whale" && !d.inCluster && !d.outOfScope && !d.suppressTierPulse;
   const cssVars = { "--ring-rgb": rgb } as React.CSSProperties;
 
   return (
@@ -139,9 +143,11 @@ const BubbleNode = memo(function BubbleNode({
         height: size,
         borderRadius: "50%",
         border: `1.5px solid ${color}`,
-        backgroundColor: `rgba(${rgb}, ${d.inCluster ? 0.15 : 0.08})`,
+        borderStyle: d.outOfScope ? "dashed" : "solid",
+        backgroundColor: `rgba(${rgb}, ${d.outOfScope ? 0.04 : d.inCluster ? 0.15 : 0.08})`,
         overflow: "hidden",
         padding: 4,
+        opacity: d.outOfScope ? 0.6 : 1,
       }}
     >
       {d.label && size >= 60 && (
@@ -181,7 +187,11 @@ const BubbleNode = memo(function BubbleNode({
 // ---- Config ----
 
 const nodeTypes = { bubbleNode: BubbleNode, funderNode: FunderNode, intermediateNode: IntermediateNode };
-const edgeTypes = { connectionEdge: ConnectionEdge, fundingEdge: FundingEdge };
+const edgeTypes = {
+  connectionEdge: ConnectionEdge,
+  evidenceEdge: EvidenceEdge,
+  fundingEdge: FundingEdge,
+};
 const FIT_VIEW_OPTIONS = { padding: 0.15, maxZoom: 1.2 } as const;
 const PRO_OPTIONS = { hideAttribution: true } as const;
 
@@ -200,6 +210,11 @@ const BUNDLE_COLORS = [
   "#a855f7", "#f97316", "#06b6d4", "#ec4899",
   "#84cc16", "#eab308", "#14b8a6", "#f43f5e",
 ];
+const EMPTY_EDGES: Edge[] = [];
+const EMPTY_CLUSTERS: HolderCluster[] = [];
+const EMPTY_FUNDERS: FundingNode[] = [];
+const EMPTY_BUNDLES: BundleGroup[] = [];
+const EMPTY_FORENSIC_CLUSTERS: SuspiciousCluster[] = [];
 
 interface HolderGraphProps {
   nodes: Node[];
@@ -213,20 +228,28 @@ interface HolderGraphProps {
   walkingFunding?: boolean;
   bundleGroups?: BundleGroup[];
   showBundles?: boolean;
+  forensicClusters?: SuspiciousCluster[];
+  showForensics?: boolean;
+  selectedForensicsClusterId?: number | null;
+  onSelectForensicsCluster?: (clusterId: number | null) => void;
 }
 
 export function HolderGraph({
   nodes: propNodes,
-  edges: propEdges = [],
-  clusters = [],
+  edges: propEdges = EMPTY_EDGES,
+  clusters = EMPTY_CLUSTERS,
   showConnections = false,
-  commonFunders = [],
+  commonFunders = EMPTY_FUNDERS,
   showFunding = false,
   loading,
   onFundCluster,
   walkingFunding = false,
-  bundleGroups = [],
+  bundleGroups = EMPTY_BUNDLES,
   showBundles = false,
+  forensicClusters = EMPTY_FORENSIC_CLUSTERS,
+  showForensics = false,
+  selectedForensicsClusterId = null,
+  onSelectForensicsCluster,
 }: HolderGraphProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState(propNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(propEdges);
@@ -241,6 +264,10 @@ export function HolderGraph({
   useEffect(() => {
     setEdges(propEdges);
   }, [propEdges, setEdges]);
+
+  useEffect(() => {
+    setHighlightedCluster(selectedForensicsClusterId);
+  }, [selectedForensicsClusterId]);
 
   const handleNodeClick = useCallback(
     (event: React.MouseEvent, node: Node) => {
@@ -280,9 +307,10 @@ export function HolderGraph({
   // Cluster highlight — apply CSS class to member nodes
   const highlightedMembers = useMemo(() => {
     if (highlightedCluster == null) return new Set<string>();
-    const cluster = clusters.find((c) => c.id === highlightedCluster);
+    const activeClusters = showForensics ? forensicClusters : clusters;
+    const cluster = activeClusters.find((c) => c.id === highlightedCluster);
     return cluster ? new Set(cluster.members) : new Set<string>();
-  }, [highlightedCluster, clusters]);
+  }, [forensicClusters, highlightedCluster, showForensics, clusters]);
 
   useEffect(() => {
     const container = document.querySelector(".react-flow");
@@ -356,7 +384,6 @@ export function HolderGraph({
     const container = document.querySelector(".react-flow");
     if (!container) return;
 
-    // Clear previous bundle highlights
     container.classList.remove("has-bundle-highlight");
     container
       .querySelectorAll(".node-bundle-highlight")
@@ -365,35 +392,15 @@ export function HolderGraph({
         (el as HTMLElement).style.removeProperty("--bundle-color");
       });
 
-    if (showBundles && bundleMembers.size > 0) {
-      container.classList.add("has-bundle-highlight");
-      for (const addr of bundleMembers) {
-        const el = container.querySelector(
-          `.react-flow__node[data-id="${CSS.escape(addr)}"]`,
-        );
-        if (el) {
-          el.classList.add("node-bundle-highlight");
-          const color = bundleColorMap.get(addr);
-          if (color) (el as HTMLElement).style.setProperty("--bundle-color", color);
-        }
-      }
-    }
-  }, [showBundles, bundleMembers, bundleColorMap]);
+    if (!showBundles || bundleMembers.size === 0) return;
 
-  // When a specific bundle is highlighted, narrow to just those members
-  useEffect(() => {
-    const container = document.querySelector(".react-flow");
-    if (!container || !showBundles) return;
-    if (highlightedBundle == null) return; // handled by main effect above
+    container.classList.add("has-bundle-highlight");
+    const activeMembers =
+      highlightedBundle == null
+        ? bundleMembers
+        : new Set(bundleGroups[highlightedBundle]?.members ?? []);
 
-    // Clear and re-apply only highlighted bundle members
-    container
-      .querySelectorAll(".node-bundle-highlight")
-      .forEach((el) => el.classList.remove("node-bundle-highlight"));
-
-    const group = bundleGroups[highlightedBundle];
-    if (!group) return;
-    for (const addr of group.members) {
+    for (const addr of activeMembers) {
       const el = container.querySelector(
         `.react-flow__node[data-id="${CSS.escape(addr)}"]`,
       );
@@ -403,7 +410,7 @@ export function HolderGraph({
         if (color) (el as HTMLElement).style.setProperty("--bundle-color", color);
       }
     }
-  }, [highlightedBundle, showBundles, bundleGroups, bundleColorMap]);
+  }, [showBundles, bundleMembers, bundleGroups, bundleColorMap, highlightedBundle]);
 
   if (loading) {
     return (
@@ -457,6 +464,170 @@ export function HolderGraph({
       </ReactFlow>
 
       {/* Cluster summary overlay */}
+      {showForensics && forensicClusters.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 38,
+            left: 8,
+            zIndex: 10,
+            background: "rgba(13, 19, 33, 0.9)",
+            border: "1px solid #1e2a3a",
+            borderRadius: 4,
+            padding: "6px 10px",
+            fontFamily: "var(--font-mono)",
+            fontSize: 9,
+            maxWidth: 340,
+            maxHeight: 260,
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 8,
+              color: "#6b7b8d",
+              textTransform: "uppercase",
+              letterSpacing: "0.1em",
+              marginBottom: 2,
+            }}
+          >
+            Suspicious Clusters
+          </div>
+          {forensicClusters.slice(0, 10).map((cluster) => {
+            const clusterColor = CLUSTER_COLORS[cluster.id % CLUSTER_COLORS.length];
+            return (
+              <div key={cluster.id} style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                <button
+                  onClick={() =>
+                    {
+                      const nextClusterId = highlightedCluster === cluster.id ? null : cluster.id;
+                      setHighlightedCluster(nextClusterId);
+                      onSelectForensicsCluster?.(nextClusterId);
+                    }
+                  }
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: 2,
+                    flex: 1,
+                    background:
+                      highlightedCluster === cluster.id
+                        ? `rgba(${hexToRgb(clusterColor)}, 0.12)`
+                        : "none",
+                    border: "none",
+                    padding: "3px 4px",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 9,
+                    color: "#c8d6e5",
+                    textAlign: "left",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (highlightedCluster !== cluster.id) {
+                      (e.currentTarget as HTMLButtonElement).style.background =
+                        `rgba(${hexToRgb(clusterColor)}, 0.06)`;
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (highlightedCluster !== cluster.id) {
+                      (e.currentTarget as HTMLButtonElement).style.background = "none";
+                    }
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: 6,
+                        height: 6,
+                        borderRadius: "50%",
+                        backgroundColor: clusterColor,
+                        flexShrink: 0,
+                      }}
+                    />
+                    <span style={{ color: clusterColor }}>{cluster.label}</span>
+                    <span style={{ marginLeft: "auto", color: "#6b7b8d" }}>
+                      {cluster.riskScore.toFixed(1)}
+                    </span>
+                  </div>
+                  <div>
+                    {cluster.members.length} wallets, {cluster.totalPct.toFixed(1)}% supply
+                  </div>
+                  {cluster.reasons.slice(0, 2).map((reason) => (
+                    <div key={reason} style={{ color: "#6b7b8d" }}>
+                      {reason}
+                    </div>
+                  ))}
+                </button>
+                {onFundCluster && (
+                  <button
+                    onClick={() => onFundCluster(cluster.members)}
+                    disabled={walkingFunding}
+                    style={{
+                      background: "rgba(255, 45, 45, 0.1)",
+                      border: "1px solid rgba(255, 45, 45, 0.3)",
+                      borderRadius: 3,
+                      padding: "1px 5px",
+                      cursor: walkingFunding ? "default" : "pointer",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 8,
+                      color: "#ff2d2d",
+                      flexShrink: 0,
+                      opacity: walkingFunding ? 0.4 : 1,
+                    }}
+                  >
+                    Fund
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {showForensics && forensicClusters.length === 0 && edges.length === 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: 12,
+            right: 12,
+            zIndex: 10,
+            background: "rgba(13, 19, 33, 0.9)",
+            border: "1px solid #1e2a3a",
+            borderRadius: 4,
+            padding: "8px 10px",
+            fontFamily: "var(--font-mono)",
+            fontSize: 9,
+            maxWidth: 260,
+            display: "flex",
+            flexDirection: "column",
+            gap: 3,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 8,
+              color: "#6b7b8d",
+              textTransform: "uppercase",
+              letterSpacing: "0.1em",
+            }}
+          >
+            Forensics
+          </div>
+          <div style={{ color: "#c8d6e5" }}>
+            No controller, funding, entry, or wash-like links cleared the current threshold.
+          </div>
+          <div style={{ color: "#6b7b8d" }}>
+            The graph is still showing the top holders. It is not showing a suspicious cluster.
+          </div>
+        </div>
+      )}
+
       {showConnections && clusters.length > 0 && (
         <div
           style={{
@@ -485,7 +656,7 @@ export function HolderGraph({
               marginBottom: 2,
             }}
           >
-            Connected Clusters
+            Direct Transfer Clusters
           </div>
           {clusters.slice(0, 8).map((c) => {
             const clusterColor =
@@ -612,7 +783,7 @@ export function HolderGraph({
               marginBottom: 2,
             }}
           >
-            Common Funders
+            Common Funding Ancestors
           </div>
           {commonFunders.slice(0, 12).map((cf) => (
             <button
@@ -703,7 +874,7 @@ export function HolderGraph({
               marginBottom: 2,
             }}
           >
-            Bundle Groups (within 4 slots)
+            Synchronized Acquisitions (within 4 slots)
           </div>
           {bundleGroups.slice(0, 12).map((g, i) => {
             const color = BUNDLE_COLORS[i % BUNDLE_COLORS.length];
@@ -765,7 +936,7 @@ export function HolderGraph({
       )}
 
       {/* Concentration legend — hide when showing connections or funding */}
-      {!showConnections && !showFunding && !showBundles && (
+      {!showConnections && !showFunding && !showBundles && !showForensics && (
         <div
           style={{
             position: "absolute",

@@ -41,6 +41,7 @@ interface CounterpartyTableProps {
   sortKey: CounterpartySortKey | null;
   sortDir: CounterpartySortDir;
   onSortChange: (sortKey: CounterpartySortKey | null, sortDir: CounterpartySortDir) => void;
+  surface?: "graph" | "flow";
 }
 
 interface TableContextMenuState {
@@ -114,6 +115,7 @@ export function CounterpartyTable({
   sortKey,
   sortDir,
   onSortChange,
+  surface = "graph",
 }: CounterpartyTableProps) {
   const [contextMenu, setContextMenu] = useState<TableContextMenuState | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -243,24 +245,28 @@ export function CounterpartyTable({
   return (
     <div ref={scrollRef} className="flex h-full flex-col overflow-y-auto">
       <div className="flex items-center gap-2 px-2 py-0.5 border-b border-border flex-none overflow-x-auto whitespace-nowrap">
-        <div className="flex items-center gap-1 shrink-0">
-          {graphFlowPills.map((pill) => (
-            <button
-              key={pill.key}
-              onClick={() => onGraphFlowFilterChange(pill.key)}
-              className="font-mono text-[8px] uppercase tracking-wider px-1 py-0.5 rounded transition-colors cursor-pointer"
-              style={{
-                background: graphFlowFilter === pill.key ? `${pill.color}20` : "transparent",
-                color: graphFlowFilter === pill.key ? pill.color : "#6b7280",
-                border: `1px solid ${graphFlowFilter === pill.key ? `${pill.color}40` : "transparent"}`,
-              }}
-            >
-              {pill.label}
-              <span className="ml-1 opacity-60">{pill.count}</span>
-            </button>
-          ))}
-        </div>
-        <div className="h-4 w-px bg-border/80 shrink-0" />
+        {surface === "graph" && (
+          <>
+            <div className="flex items-center gap-1 shrink-0">
+              {graphFlowPills.map((pill) => (
+                <button
+                  key={pill.key}
+                  onClick={() => onGraphFlowFilterChange(pill.key)}
+                  className="font-mono text-[8px] uppercase tracking-wider px-1 py-0.5 rounded transition-colors cursor-pointer"
+                  style={{
+                    background: graphFlowFilter === pill.key ? `${pill.color}20` : "transparent",
+                    color: graphFlowFilter === pill.key ? pill.color : "#6b7280",
+                    border: `1px solid ${graphFlowFilter === pill.key ? `${pill.color}40` : "transparent"}`,
+                  }}
+                >
+                  {pill.label}
+                  <span className="ml-1 opacity-60">{pill.count}</span>
+                </button>
+              ))}
+            </div>
+            <div className="h-4 w-px bg-border/80 shrink-0" />
+          </>
+        )}
         <div className="flex items-center gap-1 shrink-0">
           {(["all", "7d", "30d", "1y", "custom"] as TimePreset[]).map(p => (
             <button
@@ -361,6 +367,23 @@ export function CounterpartyTable({
               <TableCell>
                 <div className="min-w-0">
                   <div className="flex items-center gap-1 font-mono text-[10px] text-foreground">
+                    {surface === "graph" && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectAddress(cp.address);
+                          if (graphAddresses.has(cp.address)) onRemoveNode(cp.address);
+                          else onAddNode(cp.address);
+                        }}
+                        className="flex h-3.5 w-3.5 flex-none items-center justify-center rounded border border-border bg-background/70 text-[8px] leading-none transition-colors hover:border-primary/40 hover:text-primary"
+                        title={graphAddresses.has(cp.address) ? "Remove from graph" : "Show on graph"}
+                      >
+                        <span className={graphAddresses.has(cp.address) ? "text-destructive" : "text-primary"}>
+                          {graphAddresses.has(cp.address) ? "−" : "+"}
+                        </span>
+                      </button>
+                    )}
                     {cp.walletColors && cp.walletColors.length > 0 && (
                       <span className="flex gap-0.5 flex-none">
                         {cp.walletColors.map((c, ci) => (
@@ -486,54 +509,56 @@ export function CounterpartyTable({
             Navigate
           </button>
 
-          {/* Add as Node / Remove from Graph */}
-          {graphAddresses.has(contextMenu.address) ? (
-            <button
-              onClick={() => { onRemoveNode(contextMenu.address); setContextMenu(null); }}
-              style={{
-                display: "flex", alignItems: "center", gap: 8, width: "100%",
-                padding: "6px 12px", background: "none", border: "none",
-                color: "#c8d6e5", fontSize: 11, fontFamily: "var(--font-mono)",
-                cursor: "pointer", textAlign: "left",
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255, 45, 45, 0.08)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "none"; }}
-            >
-              <span style={{ fontSize: 13, color: "#ff2d2d" }}>&times;</span>
-              Remove from Graph
-            </button>
-          ) : (
-            <button
-              onClick={() => { onAddNode(contextMenu.address); setContextMenu(null); }}
-              style={{
-                display: "flex", alignItems: "center", gap: 8, width: "100%",
-                padding: "6px 12px", background: "none", border: "none",
-                color: "#c8d6e5", fontSize: 11, fontFamily: "var(--font-mono)",
-                cursor: "pointer", textAlign: "left",
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0, 212, 255, 0.08)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "none"; }}
-            >
-              <span style={{ fontSize: 13 }}>+</span>
-              Add as Node
-            </button>
-          )}
+          {surface === "graph" && (
+            <>
+              {graphAddresses.has(contextMenu.address) ? (
+                <button
+                  onClick={() => { onRemoveNode(contextMenu.address); setContextMenu(null); }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8, width: "100%",
+                    padding: "6px 12px", background: "none", border: "none",
+                    color: "#c8d6e5", fontSize: 11, fontFamily: "var(--font-mono)",
+                    cursor: "pointer", textAlign: "left",
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255, 45, 45, 0.08)"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "none"; }}
+                >
+                  <span style={{ fontSize: 13, color: "#ff2d2d" }}>&times;</span>
+                  Remove from Graph
+                </button>
+              ) : (
+                <button
+                  onClick={() => { onAddNode(contextMenu.address); setContextMenu(null); }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8, width: "100%",
+                    padding: "6px 12px", background: "none", border: "none",
+                    color: "#c8d6e5", fontSize: 11, fontFamily: "var(--font-mono)",
+                    cursor: "pointer", textAlign: "left",
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0, 212, 255, 0.08)"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "none"; }}
+                >
+                  <span style={{ fontSize: 13 }}>+</span>
+                  Show on Graph
+                </button>
+              )}
 
-          {/* Add as Full Graph */}
-          <button
-            onClick={() => { onAddOverlay(contextMenu.address); setContextMenu(null); }}
-            style={{
-              display: "flex", alignItems: "center", gap: 8, width: "100%",
-              padding: "6px 12px", background: "none", border: "none",
-              color: "#c8d6e5", fontSize: 11, fontFamily: "var(--font-mono)",
-              cursor: "pointer", textAlign: "left",
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0, 212, 255, 0.08)"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "none"; }}
-          >
-            <span style={{ fontSize: 13 }}>&loz;</span>
-            Add as Full Graph
-          </button>
+              <button
+                onClick={() => { onAddOverlay(contextMenu.address); setContextMenu(null); }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8, width: "100%",
+                  padding: "6px 12px", background: "none", border: "none",
+                  color: "#c8d6e5", fontSize: 11, fontFamily: "var(--font-mono)",
+                  cursor: "pointer", textAlign: "left",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0, 212, 255, 0.08)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "none"; }}
+              >
+                <span style={{ fontSize: 13 }}>&loz;</span>
+                Add to Compare
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

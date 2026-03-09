@@ -269,8 +269,14 @@ export function WalletOverlayPanel({
   return (
     <div className="p-2 space-y-1">
       <div className="font-mono text-[8px] uppercase tracking-[0.2em] text-muted-foreground">
-        Graph Wallets
+        Compared Wallets
       </div>
+
+      {overlayWallets.length === 0 && (
+        <div className="rounded border border-primary/15 bg-primary/5 px-2 py-1 font-mono text-[8px] leading-relaxed text-muted-foreground">
+          Select a node or row, then use <span className="text-primary">Add to Compare</span> to reveal shared counterparties.
+        </div>
+      )}
 
       {/* Primary wallet (always first, not removable) */}
       {primaryAddress && (
@@ -380,7 +386,7 @@ export function WalletOverlayPanel({
             </div>
             <Input
               type="text"
-              placeholder="ADD NEW WALLET TO GRAPH..."
+              placeholder="COMPARE ANOTHER WALLET..."
               value={value}
               onChange={(e) => {
                 setValue(e.target.value);
@@ -404,7 +410,7 @@ export function WalletOverlayPanel({
 
       {!disabled && (
         <div className="font-mono text-[8px] text-muted-foreground/50">
-          {overlayWallets.length + 1} wallets on graph
+          {overlayWallets.length + 1} wallets compared
         </div>
       )}
     </div>

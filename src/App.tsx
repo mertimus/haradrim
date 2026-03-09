@@ -1,6 +1,7 @@
 import { startTransition, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Node, Edge } from "@xyflow/react";
 import { SearchBar } from "@/components/SearchBar";
+import { ExplorerLanding } from "@/components/ExplorerLanding";
 import { WalletProfile } from "@/components/WalletProfile";
 import { CounterpartyTable } from "@/components/CounterpartyTable";
 import type {
@@ -11,17 +12,21 @@ import type {
 } from "@/components/CounterpartyTable";
 import { CounterpartyDetailPanel } from "@/components/CounterpartyDetailPanel";
 import type { SelectedCounterpartyDetail } from "@/components/CounterpartyDetailPanel";
+import { FlowTransferHistoryPanel } from "@/components/FlowTransferHistoryPanel";
+import type { FlowTransferHistoryItem } from "@/components/FlowTransferHistoryPanel";
 import { TransactionGraph } from "@/components/TransactionGraph";
+import { WalletFlowView } from "@/components/WalletFlowView";
+import { WalletConnectionsCoachmark } from "@/components/WalletConnectionsCoachmark";
 import { WalletOverlayPanel } from "@/components/WalletOverlayPanel";
 import { WalletInsightsStrip } from "@/components/WalletInsightsStrip";
 import type { WalletInsight } from "@/components/WalletInsightsStrip";
-import { TokenExplorer } from "@/components/TokenExplorer";
-import { TimeRelapse } from "@/components/TimeRelapse";
 import { TraceExplorer } from "@/components/TraceExplorer";
 import {
   getIdentity,
+  getBatchIdentity,
   getBalances,
   getFunding,
+  getPreferredSolDomain,
 } from "@/api";
 import type { WalletIdentity, WalletBalances, FundingSource } from "@/api";
 import {
@@ -39,7 +44,10 @@ import type {
   GraphFlowFilter,
 } from "@/lib/parse-transactions";
 import { sortCounterparties } from "@/lib/counterparty-sorting";
-import { getWalletAnalysis } from "@/lib/backend-api";
+import {
+  getEnhancedCounterpartyHistory,
+  getWalletAnalysis,
+} from "@/lib/backend-api";
 
 export interface WalletFilter {
   minVolume: number;
@@ -52,6 +60,12 @@ export interface GraphTypeFilter {
   token: boolean;
   program: boolean;
 }
+
+const DEFAULT_GRAPH_TYPE_FILTER: GraphTypeFilter = {
+  wallet: true,
+  token: true,
+  program: true,
+};
 
 export type GraphPreset =
   | "overview"
@@ -84,6 +98,56 @@ function describeCounterparty(cp: CounterpartyFlow): string {
 
 function describeWallet(address: string, identity: WalletIdentity | null | undefined): string {
   return identity?.label ?? identity?.name ?? truncAddr(address);
+}
+
+function isAddressFallbackLabel(label: string, address: string): boolean {
+  return label === address
+    || label === `${address.slice(0, 3)}...${address.slice(-3)}`
+    || label === `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
+function shouldUseIdentityLabel(
+  currentLabel: string | undefined,
+  identityLabel: string | undefined,
+  address: string,
+): boolean {
+  if (!identityLabel) return false;
+  if (!currentLabel) return true;
+  if (currentLabel === identityLabel) return false;
+  if (isAddressFallbackLabel(currentLabel, address)) return true;
+  if (!currentLabel.toLowerCase().endsWith(".sol") && identityLabel.toLowerCase().endsWith(".sol")) {
+    return true;
+  }
+  return false;
+}
+
+function applyCounterpartyIdentityOverrides<T extends CounterpartyFlow>(
+  counterparties: T[],
+  identityByAddress: Map<string, WalletIdentity | null>,
+): T[] {
+  if (identityByAddress.size === 0) return counterparties;
+
+  let changed = false;
+  const next = counterparties.map((cp) => {
+    const identity = identityByAddress.get(cp.address);
+    if (!identity) return cp;
+
+    const identityLabel = identity.label ?? identity.name;
+    const label = shouldUseIdentityLabel(cp.label, identityLabel, cp.address)
+      ? identityLabel
+      : cp.label;
+    const category = cp.category ?? identity.category;
+    if (label === cp.label && category === cp.category) return cp;
+
+    changed = true;
+    return {
+      ...cp,
+      label,
+      category,
+    };
+  });
+
+  return changed ? next : counterparties;
 }
 
 function formatSolCompact(sol: number): string {
@@ -194,8 +258,8 @@ function mergeDisplayCounterparties(
 }
 
 function getAddressFromUrl(): string {
-  // Support both /wallet/:addr and ?address= (legacy)
-  const pathMatch = window.location.pathname.match(/^\/wallet\/([A-Za-z0-9]+)$/);
+  // Support /wallet/:addr, /flows/:addr and ?address= (legacy)
+  const pathMatch = window.location.pathname.match(/^\/(?:wallet|flows)\/([A-Za-z0-9]+)$/);
   if (pathMatch) return pathMatch[1];
   const params = new URLSearchParams(window.location.search);
   return params.get("address") ?? "";
@@ -206,6 +270,10 @@ function setModeInUrl(mode: AppMode, address = ""): void {
     window.history.pushState({}, "", address ? `/wallet/${address}` : "/");
     return;
   }
+  if (mode === "flows") {
+    window.history.pushState({}, "", address ? `/flows/${address}` : "/flows");
+    return;
+  }
   if (mode === "trace") {
     window.history.pushState({}, "", address ? `/trace/${address}` : "/trace");
     return;
@@ -213,8 +281,18 @@ function setModeInUrl(mode: AppMode, address = ""): void {
   window.history.pushState({}, "", `/${mode}`);
 }
 
+function isDisabledTokenPath(pathname = window.location.pathname): boolean {
+  return pathname === "/tokens" || pathname.startsWith("/token/");
+}
+
+function normalizeDisabledTokenRoute(): boolean {
+  if (!isDisabledTokenPath()) return false;
+  window.history.replaceState({}, "", "/");
+  return true;
+}
+
 function getModeFromUrl(): AppMode {
-  if (window.location.pathname.startsWith("/token")) return "tokens";
+  if (window.location.pathname.startsWith("/flows")) return "flows";
   if (window.location.pathname.startsWith("/trace")) return "trace";
   return "wallet";
 }
@@ -224,7 +302,7 @@ function getTraceAddressFromUrl(): string {
   return match?.[1] ?? "";
 }
 
-export type AppMode = "wallet" | "tokens" | "programs" | "trace";
+export type AppMode = "wallet" | "flows" | "programs" | "trace";
 
 export default function App() {
   const [mode, setMode] = useState<AppMode>(getModeFromUrl);
@@ -254,7 +332,7 @@ export default function App() {
   const [walletFilters, setWalletFilters] = useState<Map<number, WalletFilter>>(new Map());
   const [graphAdded, setGraphAdded] = useState<Set<string>>(new Set());
   const [graphRemoved, setGraphRemoved] = useState<Set<string>>(new Set());
-  const [graphTypeFilter, setGraphTypeFilter] = useState<GraphTypeFilter>({ wallet: true, token: false, program: false });
+  const [graphTypeFilter, setGraphTypeFilter] = useState<GraphTypeFilter>(DEFAULT_GRAPH_TYPE_FILTER);
   const [graphFlowFilter, setGraphFlowFilter] = useState<GraphFlowFilter>("all");
   const [graphScopeFilter, setGraphScopeFilter] = useState<GraphScopeFilter>("all");
   const [graphScopeNowTs, setGraphScopeNowTs] = useState(() => Math.floor(Date.now() / 1000));
@@ -269,19 +347,61 @@ export default function App() {
   const lookupRequestIdRef = useRef(0);
   const timeRangeRequestIdRef = useRef(0);
   const overlayRequestIdsRef = useRef(new Map<string, number>());
+  const flowHistoryRequestIdRef = useRef(0);
+  const flowHistoryCacheRef = useRef(new Map<string, Map<string, {
+    type?: string;
+    description?: string;
+    source?: string;
+    protocol?: string;
+    programs?: Array<{ id: string; label: string }>;
+    timestamp?: number;
+  }>>());
+  const [flowHistoryLoading, setFlowHistoryLoading] = useState(false);
+  const [flowHistoryError, setFlowHistoryError] = useState<string | null>(null);
+  const [flowEnhancedBySignature, setFlowEnhancedBySignature] = useState<Map<string, {
+    type?: string;
+    description?: string;
+    source?: string;
+    protocol?: string;
+    programs?: Array<{ id: string; label: string }>;
+    timestamp?: number;
+  }>>(new Map());
+  const [detailIdentityByAddress, setDetailIdentityByAddress] = useState<Map<string, WalletIdentity | null>>(new Map());
+  const searchDisplayValue = address ? (getPreferredSolDomain(address) ?? address) : "";
+  const enrichedCounterparties = useMemo(
+    () => applyCounterpartyIdentityOverrides(counterparties, detailIdentityByAddress),
+    [counterparties, detailIdentityByAddress],
+  );
+  const enrichedAllTimeCounterparties = useMemo(
+    () => applyCounterpartyIdentityOverrides(allTimeCounterparties, detailIdentityByAddress),
+    [allTimeCounterparties, detailIdentityByAddress],
+  );
+  const enrichedOverlayWallets = useMemo(
+    () => overlayWallets.map((wallet) => ({
+      ...wallet,
+      counterparties: applyCounterpartyIdentityOverrides(wallet.counterparties, detailIdentityByAddress),
+    })),
+    [detailIdentityByAddress, overlayWallets],
+  );
 
   // Ref-based hover highlight — no React re-renders, pure DOM manipulation
   const graphWrapperRef = useRef<HTMLDivElement>(null);
   const handleHoverAddress = useCallback((address: string | null) => {
     const container = graphWrapperRef.current;
     if (!container) return;
-    const prev = container.querySelector(".react-flow__node.node-highlighted");
-    if (prev) prev.classList.remove("node-highlighted");
+    const prevNode = container.querySelector(".react-flow__node.node-highlighted");
+    if (prevNode) prevNode.classList.remove("node-highlighted");
+    const prevLane = container.querySelector(".wallet-flow-lane.flow-lane-highlighted");
+    if (prevLane) prevLane.classList.remove("flow-lane-highlighted");
     if (address) {
-      const el = container.querySelector(
+      const nodeEl = container.querySelector(
         `.react-flow__node[data-id="${CSS.escape(address)}"]`,
       );
-      if (el) el.classList.add("node-highlighted");
+      if (nodeEl) nodeEl.classList.add("node-highlighted");
+      const laneEl = container.querySelector(
+        `.wallet-flow-lane[data-flow-address="${CSS.escape(address)}"]`,
+      );
+      if (laneEl) laneEl.classList.add("flow-lane-highlighted");
     }
   }, []);
 
@@ -294,13 +414,13 @@ export default function App() {
   // Filter counterparties by per-wallet volume, tx count, and net flow thresholds
   const filteredCounterparties = useMemo(() => {
     const f = walletFilters.get(0);
-    if (!f) return counterparties;
-    return counterparties.filter(cp =>
+    if (!f) return enrichedCounterparties;
+    return enrichedCounterparties.filter(cp =>
       (f.minVolume <= 0 || cp.solSent + cp.solReceived >= f.minVolume) &&
       (f.minTxCount <= 0 || cp.txCount >= f.minTxCount) &&
       (f.netThreshold === 0 || (f.netThreshold > 0 ? cp.solNet >= f.netThreshold : cp.solNet <= f.netThreshold))
     );
-  }, [counterparties, walletFilters]);
+  }, [enrichedCounterparties, walletFilters]);
 
   const directionalGraphCounterparties = useMemo(
     () => projectCounterpartiesForGraphFlow(filteredCounterparties, graphFlowFilter),
@@ -340,12 +460,12 @@ export default function App() {
       return { maxVolume: maxVol, maxTxCount: maxTx, minNet: minN, maxNet: maxN, totalCount: cps.length, filteredCount };
     }
 
-    const stats: WalletStats[] = [computeStats(counterparties, walletFilters.get(0))];
-    for (let i = 0; i < overlayWallets.length; i++) {
-      stats.push(computeStats(overlayWallets[i].counterparties, walletFilters.get(i + 1)));
+    const stats: WalletStats[] = [computeStats(enrichedCounterparties, walletFilters.get(0))];
+    for (let i = 0; i < enrichedOverlayWallets.length; i++) {
+      stats.push(computeStats(enrichedOverlayWallets[i].counterparties, walletFilters.get(i + 1)));
     }
     return stats;
-  }, [counterparties, overlayWallets, walletFilters]);
+  }, [enrichedCounterparties, enrichedOverlayWallets, walletFilters]);
 
   const handleColorChange = useCallback((walletIndex: number, color: string) => {
     setColorOverrides((prev) => {
@@ -413,6 +533,8 @@ export default function App() {
 
   // Compute which addresses are currently in the graph
   const graphAddresses = useMemo(() => new Set(nodes.map(n => n.id)), [nodes]);
+  const hasOverlayComparison = overlayWallets.length > 0;
+  const isFlowPage = mode === "flows";
 
   // Handlers for add/remove graph nodes
   const handleGraphAddNode = useCallback((addr: string) => {
@@ -427,7 +549,7 @@ export default function App() {
 
   // Filter overlay counterparties by per-wallet volume, tx count, and net flow thresholds
   const filteredOverlayWallets = useMemo(() => {
-    return overlayWallets.map((ow, i) => {
+    return enrichedOverlayWallets.map((ow, i) => {
       const f = walletFilters.get(i + 1);
       if (!f) return ow;
       return {
@@ -439,7 +561,7 @@ export default function App() {
         ),
       };
     });
-  }, [overlayWallets, walletFilters]);
+  }, [enrichedOverlayWallets, walletFilters]);
 
   const mergedCounterparties = useMemo(
     () => mergeDisplayCounterparties(filteredCounterparties, filteredOverlayWallets, address, walletColors),
@@ -663,7 +785,7 @@ export default function App() {
   );
 
   const walletInsights = useMemo((): WalletInsight[] => {
-    const historicalCounterparties = allTimeCounterparties.length > 0 ? allTimeCounterparties : filteredCounterparties;
+    const historicalCounterparties = enrichedAllTimeCounterparties.length > 0 ? enrichedAllTimeCounterparties : filteredCounterparties;
     const byOutflow = filteredCounterparties
       .filter((cp) => cp.solSent > 0)
       .sort((a, b) => b.solSent - a.solSent)[0];
@@ -759,12 +881,43 @@ export default function App() {
             preset: "new30d",
           },
     ];
-  }, [allTimeCounterparties, filteredCounterparties, sharedComparisonCount, strongestSharedCounterparty]);
+  }, [enrichedAllTimeCounterparties, filteredCounterparties, sharedComparisonCount, strongestSharedCounterparty]);
+
+  useEffect(() => {
+    if (!selectedCounterpartyAddress) return;
+    if (detailIdentityByAddress.has(selectedCounterpartyAddress)) return;
+
+    let cancelled = false;
+    void getIdentity(selectedCounterpartyAddress)
+      .then((result) => {
+        if (cancelled) return;
+        setDetailIdentityByAddress((prev) => {
+          if (prev.has(selectedCounterpartyAddress)) return prev;
+          const next = new Map(prev);
+          next.set(selectedCounterpartyAddress, result);
+          return next;
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDetailIdentityByAddress((prev) => {
+          if (prev.has(selectedCounterpartyAddress)) return prev;
+          const next = new Map(prev);
+          next.set(selectedCounterpartyAddress, null);
+          return next;
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detailIdentityByAddress, selectedCounterpartyAddress]);
 
   const selectedCounterpartyDetail = useMemo((): SelectedCounterpartyDetail | null => {
     if (!selectedCounterpartyAddress) return null;
     const cp = mergedCounterparties.find((counterparty) => counterparty.address === selectedCounterpartyAddress);
     if (!cp) return null;
+    const identityOverride = detailIdentityByAddress.get(selectedCounterpartyAddress);
 
     const connectedWallets = comparisonWallets
       .filter((wallet) => wallet.counterparties.some((counterparty) => counterparty.address === cp.address))
@@ -777,8 +930,8 @@ export default function App() {
 
     return {
       address: cp.address,
-      label: cp.label,
-      category: cp.category,
+      label: cp.label ?? identityOverride?.label ?? identityOverride?.name,
+      category: cp.category ?? identityOverride?.category,
       accountType: cp.accountType,
       tokenName: cp.tokenName,
       tokenSymbol: cp.tokenSymbol,
@@ -790,17 +943,238 @@ export default function App() {
       lastSeen: cp.lastSeen,
       connectedWallets,
     };
-  }, [comparisonWallets, mergedCounterparties, selectedCounterpartyAddress]);
+  }, [comparisonWallets, detailIdentityByAddress, mergedCounterparties, selectedCounterpartyAddress]);
+
+  const flowSelectedCounterpartyDetail = useMemo((): SelectedCounterpartyDetail | null => {
+    if (!selectedCounterpartyAddress) return null;
+    const cp = filteredCounterparties.find((counterparty) => counterparty.address === selectedCounterpartyAddress);
+    if (!cp) return null;
+    const identityOverride = detailIdentityByAddress.get(selectedCounterpartyAddress);
+
+    return {
+      address: cp.address,
+      label: cp.label ?? identityOverride?.label ?? identityOverride?.name,
+      category: cp.category ?? identityOverride?.category,
+      accountType: cp.accountType,
+      tokenName: cp.tokenName,
+      tokenSymbol: cp.tokenSymbol,
+      txCount: cp.txCount,
+      solSent: cp.solSent,
+      solReceived: cp.solReceived,
+      solNet: cp.solNet,
+      firstSeen: cp.firstSeen,
+      lastSeen: cp.lastSeen,
+      connectedWallets: [
+        {
+          address,
+          label: describeWallet(address, identity),
+          color: walletColors[0],
+          role: "Primary",
+        },
+      ],
+    };
+  }, [address, detailIdentityByAddress, filteredCounterparties, identity, selectedCounterpartyAddress, walletColors]);
+
+  const currentSelectedCounterpartyDetail = isFlowPage
+    ? flowSelectedCounterpartyDetail
+    : selectedCounterpartyDetail;
+  const currentTableCounterparties = sortedMergedCounterparties;
 
   useEffect(() => {
-    if (sortedMergedCounterparties.length === 0) {
+    const addressesToPrefetch = [
+      ...rankedGraphCounterparties.slice(0, effectiveGraphNodeBudget),
+      ...currentTableCounterparties.slice(0, 150),
+    ]
+      .filter((cp) => !detailIdentityByAddress.has(cp.address))
+      .map((cp) => cp.address);
+
+    const uniqueAddresses = [...new Set(addressesToPrefetch)];
+    if (uniqueAddresses.length === 0) return;
+
+    let cancelled = false;
+    void getBatchIdentity(uniqueAddresses)
+      .then((identityMap) => {
+        if (cancelled) return;
+        setDetailIdentityByAddress((prev) => {
+          const next = new Map(prev);
+          let changed = false;
+          for (const addr of uniqueAddresses) {
+            if (next.has(addr)) continue;
+            next.set(addr, identityMap.get(addr) ?? null);
+            changed = true;
+          }
+          return changed ? next : prev;
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDetailIdentityByAddress((prev) => {
+          const next = new Map(prev);
+          let changed = false;
+          for (const addr of uniqueAddresses) {
+            if (next.has(addr)) continue;
+            next.set(addr, null);
+            changed = true;
+          }
+          return changed ? next : prev;
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentTableCounterparties,
+    detailIdentityByAddress,
+    effectiveGraphNodeBudget,
+    rankedGraphCounterparties,
+  ]);
+
+  const flowTransferHistory = useMemo<FlowTransferHistoryItem[]>(() => {
+    if (!selectedCounterpartyAddress) return [];
+
+    return rawTxsRef.current
+      .map((tx) => {
+        const transfers = tx.transfers.filter(
+          (transfer) => transfer.counterparty === selectedCounterpartyAddress,
+        );
+        if (transfers.length === 0) return null;
+
+        const sentMap = new Map<string, {
+          assetId: string;
+          kind: "native" | "token";
+          mint?: string;
+          symbol?: string;
+          name?: string;
+          logoUri?: string;
+          uiAmount: number;
+        }>();
+        const receivedMap = new Map<string, {
+          assetId: string;
+          kind: "native" | "token";
+          mint?: string;
+          symbol?: string;
+          name?: string;
+          logoUri?: string;
+          uiAmount: number;
+        }>();
+        let sentSol = 0;
+        let receivedSol = 0;
+
+        for (const transfer of transfers) {
+          const targetMap = transfer.direction === "outflow" ? sentMap : receivedMap;
+          const existing = targetMap.get(transfer.assetId);
+          const nextAmount = (existing?.uiAmount ?? 0) + transfer.uiAmount;
+          targetMap.set(transfer.assetId, {
+            assetId: transfer.assetId,
+            kind: transfer.kind,
+            mint: transfer.mint,
+            symbol: transfer.symbol,
+            name: transfer.name,
+            logoUri: transfer.logoUri,
+            uiAmount: nextAmount,
+          });
+          if (transfer.kind === "native") {
+            if (transfer.direction === "outflow") sentSol += transfer.uiAmount;
+            else receivedSol += transfer.uiAmount;
+          }
+        }
+
+        const sent = [...sentMap.values()].sort((a, b) => b.uiAmount - a.uiAmount);
+        const received = [...receivedMap.values()].sort((a, b) => b.uiAmount - a.uiAmount);
+        const distinctAssetCount = new Set(transfers.map((transfer) => transfer.assetId)).size;
+        const semantic: FlowTransferHistoryItem["semantic"] = sent.length > 0 && received.length > 0
+          ? (distinctAssetCount > 1 ? "swap" : "two-way")
+          : (received.length > 0 ? "inflow" : "outflow");
+
+        return {
+          signature: tx.signature,
+          timestamp: tx.timestamp,
+          sent,
+          received,
+          solNet: receivedSol - sentSol,
+          fee: tx.fee,
+          totalTransferCount: transfers.length,
+          semantic,
+        };
+      })
+      .filter((item): item is FlowTransferHistoryItem => item !== null)
+      .map((item) => {
+        const enhanced = flowEnhancedBySignature.get(item.signature);
+        return enhanced
+          ? {
+              ...item,
+              enhancedType: enhanced.type,
+              enhancedDescription: enhanced.description,
+              enhancedSource: enhanced.source,
+              protocol: enhanced.protocol,
+              programs: enhanced.programs,
+            }
+          : item;
+      })
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }, [flowEnhancedBySignature, selectedCounterpartyAddress]);
+
+  useEffect(() => {
+    if (!isFlowPage || !address || !selectedCounterpartyAddress) {
+      flowHistoryRequestIdRef.current += 1;
+      setFlowHistoryLoading(false);
+      setFlowHistoryError(null);
+      setFlowEnhancedBySignature(new Map());
+      return;
+    }
+
+    const cacheKey = `${address}:${selectedCounterpartyAddress}:${txCount}:${lastBlockTime}`;
+  const cached = flowHistoryCacheRef.current.get(cacheKey);
+    if (cached) {
+      setFlowEnhancedBySignature(cached);
+      setFlowHistoryLoading(false);
+      setFlowHistoryError(null);
+      return;
+    }
+
+    const rid = ++flowHistoryRequestIdRef.current;
+    setFlowHistoryLoading(true);
+    setFlowHistoryError(null);
+    setFlowEnhancedBySignature(new Map());
+
+    void getEnhancedCounterpartyHistory(address, selectedCounterpartyAddress)
+      .then((result) => {
+        if (rid !== flowHistoryRequestIdRef.current) return;
+        const next = new Map(
+          result.annotations.map((annotation) => [
+            annotation.signature,
+            {
+              type: annotation.type,
+              description: annotation.description,
+              source: annotation.source,
+              protocol: annotation.protocol,
+              programs: annotation.programs,
+              timestamp: annotation.timestamp,
+            },
+          ]),
+        );
+        flowHistoryCacheRef.current.set(cacheKey, next);
+        setFlowEnhancedBySignature(next);
+        setFlowHistoryLoading(false);
+      })
+      .catch((err) => {
+        if (rid !== flowHistoryRequestIdRef.current) return;
+        setFlowHistoryError(err instanceof Error ? err.message : "Failed to enhance flow history");
+        setFlowHistoryLoading(false);
+      });
+  }, [address, isFlowPage, lastBlockTime, selectedCounterpartyAddress, txCount]);
+
+  useEffect(() => {
+    const selectableCounterparties = isFlowPage ? filteredCounterparties : sortedMergedCounterparties;
+    if (selectableCounterparties.length === 0) {
       if (selectedCounterpartyAddress != null) setSelectedCounterpartyAddress(null);
       return;
     }
-    if (!selectedCounterpartyAddress || !sortedMergedCounterparties.some((cp) => cp.address === selectedCounterpartyAddress)) {
-      setSelectedCounterpartyAddress(sortedMergedCounterparties[0].address);
+    if (selectedCounterpartyAddress && !selectableCounterparties.some((cp) => cp.address === selectedCounterpartyAddress)) {
+      setSelectedCounterpartyAddress(null);
     }
-  }, [sortedMergedCounterparties, selectedCounterpartyAddress]);
+  }, [filteredCounterparties, isFlowPage, selectedCounterpartyAddress, sortedMergedCounterparties]);
 
   const applyWalletAnalysis = useCallback((counterpartyData: CounterpartyFlow[], transactions: ParsedTransaction[], count: number, blockTime: number) => {
     rawTxsRef.current = transactions;
@@ -817,6 +1191,8 @@ export default function App() {
     lookupRequestIdRef.current += 1;
     timeRangeRequestIdRef.current += 1;
     overlayRequestIdsRef.current = new Map();
+    flowHistoryRequestIdRef.current += 1;
+    flowHistoryCacheRef.current = new Map();
     setAddress("");
     setIdentity(null);
     setBalances(null);
@@ -832,11 +1208,14 @@ export default function App() {
     setWalletFilters(new Map());
     setGraphAdded(new Set());
     setGraphRemoved(new Set());
-    setGraphTypeFilter({ wallet: true, token: false, program: false });
+    setGraphTypeFilter(DEFAULT_GRAPH_TYPE_FILTER);
     setGraphFlowFilter("all");
     setGraphScopeFilter("all");
     setGraphScopeNowTs(Math.floor(Date.now() / 1000));
     setSelectedCounterpartyAddress(null);
+    setFlowHistoryLoading(false);
+    setFlowHistoryError(null);
+    setFlowEnhancedBySignature(new Map());
     setWalletError(null);
     setIdentityError(null);
     setBalancesError(null);
@@ -882,7 +1261,7 @@ export default function App() {
     setWalletFilters(new Map());
     setGraphAdded(new Set());
     setGraphRemoved(new Set());
-    setGraphTypeFilter({ wallet: true, token: false, program: false });
+    setGraphTypeFilter(DEFAULT_GRAPH_TYPE_FILTER);
     setGraphFlowFilter("all");
     setGraphScopeFilter("all");
     setGraphScopeNowTs(Math.floor(Date.now() / 1000));
@@ -981,8 +1360,8 @@ export default function App() {
       setOverlayWallets((prev) => [...prev, newOverlay]);
 
       try {
-        const existingCp = counterparties.find(c => c.address === overlayAddr)
-          ?? overlayWallets.flatMap(ow => ow.counterparties).find(c => c.address === overlayAddr);
+        const existingCp = enrichedCounterparties.find(c => c.address === overlayAddr)
+          ?? enrichedOverlayWallets.flatMap(ow => ow.counterparties).find(c => c.address === overlayAddr);
         const ident: WalletIdentity | null = existingCp?.label
           ? { address: overlayAddr, name: existingCp.label, label: existingCp.label, category: existingCp.category }
           : null;
@@ -1009,7 +1388,7 @@ export default function App() {
         );
       }
     },
-    [address, overlayWallets, counterparties],
+    [address, enrichedCounterparties, enrichedOverlayWallets, overlayWallets],
   );
 
   const handleRemoveOverlay = useCallback((overlayAddr: string) => {
@@ -1055,12 +1434,13 @@ export default function App() {
 
   const handleSearch = useCallback(
     (addr: string) => {
-      setMode("wallet");
+      const nextMode: AppMode = mode === "flows" ? "flows" : "wallet";
+      setMode(nextMode);
       setAddress(addr);
-      setModeInUrl("wallet", addr);
+      setModeInUrl(nextMode, addr);
       lookup(addr);
     },
-    [lookup],
+    [lookup, mode],
   );
 
   const handleNavigate = useCallback(
@@ -1071,7 +1451,12 @@ export default function App() {
   );
 
   useEffect(() => {
+    normalizeDisabledTokenRoute();
+  }, []);
+
+  useEffect(() => {
     function onPop() {
+      normalizeDisabledTokenRoute();
       // Update mode based on URL path
       setMode(getModeFromUrl());
       const addr = getAddressFromUrl();
@@ -1112,12 +1497,12 @@ export default function App() {
           </button>
           <div className="h-3 w-px bg-border" />
           <nav className="flex gap-1">
-            {(["wallet", "tokens", "trace"] as const).map((m) => (
+            {(["wallet", "flows", "trace"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => {
                   setMode(m);
-                  setModeInUrl(m, m === "wallet" ? address : "");
+                  setModeInUrl(m, m === "wallet" || m === "flows" ? address : "");
                 }}
                 className="font-mono text-[9px] uppercase tracking-widest px-2 py-0.5 rounded transition-colors cursor-pointer"
                 style={{
@@ -1125,31 +1510,42 @@ export default function App() {
                   background: mode === m ? "rgba(0, 212, 255, 0.08)" : "transparent",
                 }}
               >
-                {m}
+                {m === "wallet" ? "shared connections" : m}
               </button>
             ))}
           </nav>
           <div className="flex-1" />
           <div className="w-full max-w-md">
-            <SearchBar key={`${mode}:${address}:header`} onSearch={handleSearch} loading={loading} defaultValue={address} />
+            <SearchBar
+              key={`${mode}:${address}:header`}
+              onSearch={handleSearch}
+              loading={loading}
+              defaultValue={searchDisplayValue}
+              autoFocus={Boolean(address) && mode !== "trace"}
+              enableShortcut={Boolean(address) && mode !== "trace"}
+            />
           </div>
         </div>
       </header>
 
-      {mode === "wallet" && (
+      {(mode === "wallet" || mode === "flows") && (
         <>
           {!address && !loading ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-4">
-              <h2 className="font-mono text-xl font-bold tracking-wider text-primary text-glow-cyan">
-                HARADRIM
-              </h2>
-              <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-                Solana Wallet Intelligence
-              </p>
-              <div className="w-full max-w-md">
-                <SearchBar key={`${mode}:${address}:empty`} onSearch={handleSearch} loading={loading} defaultValue={address} />
-              </div>
-            </div>
+            <ExplorerLanding
+              mode={mode}
+              action={(
+                <div className="w-full">
+                  <SearchBar
+                    key={`${mode}:${address}:empty`}
+                    onSearch={handleSearch}
+                    loading={loading}
+                    defaultValue={searchDisplayValue}
+                    autoFocus
+                    enableShortcut
+                  />
+                </div>
+              )}
+            />
           ) : (
             <div className="flex flex-1 flex-col overflow-hidden">
               {/* Top strip: wallet profile as horizontal bar */}
@@ -1198,83 +1594,124 @@ export default function App() {
               <div className="flex flex-1 overflow-hidden">
                 {/* Graph: takes most of the space */}
                 <div ref={graphWrapperRef} className="flex-1 overflow-hidden relative">
-                  <TransactionGraph
-                    nodes={nodes}
-                    edges={edges}
-                    loading={graphLoading}
-                    onNavigate={handleNavigate}
-                    onAddOverlay={handleAddOverlay}
-                    onRemoveNode={handleGraphRemoveNode}
-                    canAddOverlay={!loading && !!address}
-                    selectedAddress={selectedCounterpartyAddress}
-                    onSelectAddress={setSelectedCounterpartyAddress}
-                  />
-                  <TimeRelapse
-                    containerRef={graphWrapperRef}
-                    counterparties={counterparties}
-                    rawTxs={rawTxsRef.current}
-                    edges={edges}
-                    centerAddress={address}
-                  />
+                  {mode === "wallet" && hasOverlayComparison && (
+                    <div className="absolute right-3 top-3 z-20 rounded border border-primary/20 bg-card/90 px-2 py-1 font-mono text-[8px] uppercase tracking-[0.18em] text-primary">
+                      Topology
+                    </div>
+                  )}
+                  {mode === "wallet" && (
+                    <WalletConnectionsCoachmark
+                      comparedCount={overlayWallets.length + 1}
+                      selectedLabel={
+                        currentSelectedCounterpartyDetail
+                          ? currentSelectedCounterpartyDetail.label
+                            ?? currentSelectedCounterpartyDetail.tokenSymbol
+                            ?? currentSelectedCounterpartyDetail.tokenName
+                            ?? truncAddr(currentSelectedCounterpartyDetail.address)
+                          : null
+                      }
+                    />
+                  )}
+
+                  {mode === "flows" ? (
+                    <WalletFlowView
+                      key={address}
+                      address={address}
+                      identity={identity}
+                      counterparties={filteredCounterparties}
+                      loading={graphLoading}
+                      selectedAddress={selectedCounterpartyAddress}
+                      onSelectAddress={setSelectedCounterpartyAddress}
+                    />
+                  ) : (
+                    <>
+                      <TransactionGraph
+                        nodes={nodes}
+                        edges={edges}
+                        loading={graphLoading}
+                        onNavigate={handleNavigate}
+                        onAddOverlay={handleAddOverlay}
+                        onRemoveNode={handleGraphRemoveNode}
+                        canAddOverlay={!loading && !!address}
+                        selectedAddress={selectedCounterpartyAddress}
+                        onSelectAddress={setSelectedCounterpartyAddress}
+                      />
+                    </>
+                  )}
                 </div>
 
                 {/* Right panel: table + overlay */}
                 <div className="w-[420px] flex-none border-l border-border overflow-hidden flex flex-col">
-                  <div className="flex-none border-b border-border">
-                    <CounterpartyDetailPanel
-                      detail={selectedCounterpartyDetail}
+                  {mode === "flows" ? (
+                    <FlowTransferHistoryPanel
+                      detail={currentSelectedCounterpartyDetail}
+                      items={flowTransferHistory}
                       loading={tableLoading}
-                      graphAddresses={graphAddresses}
-                      onNavigate={handleNavigate}
-                      onAddNode={handleGraphAddNode}
-                      onRemoveNode={handleGraphRemoveNode}
-                      onAddOverlay={handleAddOverlay}
+                      parsingEnhanced={flowHistoryLoading}
+                      parseError={flowHistoryError}
                     />
-                  </div>
-                  <div className="flex-1 min-h-0 overflow-hidden">
-                    <CounterpartyTable
-                      key={`${address}:table`}
-                      counterparties={sortedMergedCounterparties}
-                      loading={tableLoading}
-                      onNavigate={handleNavigate}
-                      onHoverAddress={handleHoverAddress}
-                      selectedAddress={selectedCounterpartyAddress}
-                      onSelectAddress={setSelectedCounterpartyAddress}
-                      graphAddresses={graphAddresses}
-                      onAddNode={handleGraphAddNode}
-                      onRemoveNode={handleGraphRemoveNode}
-                      onAddOverlay={handleAddOverlay}
-                      onTimeRangeChange={handleTimeRangeChange}
-                      graphFlowFilter={graphFlowFilter}
-                      onGraphFlowFilterChange={handleGraphFlowFilterChange}
-                      sortKey={tableSortKey}
-                      sortDir={tableSortDir}
-                      onSortChange={handleTableSortChange}
-                    />
-                  </div>
-                  <div className="flex-none border-t border-border">
-                    <WalletOverlayPanel
-                      primaryAddress={address}
-                      primaryIdentity={identity}
-                      overlayWallets={overlayWallets}
-                      walletColors={walletColors}
-                      onAdd={handleAddOverlay}
-                      onRemove={handleRemoveOverlay}
-                      onColorChange={handleColorChange}
-                      disabled={!address}
-                      walletFilters={walletFilters}
-                      walletStats={walletStats}
-                      onWalletFilterChange={handleWalletFilterChange}
-                    />
-                  </div>
+                  ) : (
+                    <>
+                      <div className="flex-none border-b border-border">
+                        <CounterpartyDetailPanel
+                          detail={currentSelectedCounterpartyDetail}
+                          loading={tableLoading}
+                          graphAddresses={graphAddresses}
+                          onNavigate={handleNavigate}
+                          onAddNode={handleGraphAddNode}
+                          onRemoveNode={handleGraphRemoveNode}
+                          onAddOverlay={handleAddOverlay}
+                          surface="graph"
+                          highlightCompareAction={!hasOverlayComparison}
+                        />
+                      </div>
+                      <div className="flex-1 min-h-0 overflow-hidden">
+                        <CounterpartyTable
+                          key={`${address}:table`}
+                          counterparties={currentTableCounterparties}
+                          loading={tableLoading}
+                          onNavigate={handleNavigate}
+                          onHoverAddress={handleHoverAddress}
+                          selectedAddress={selectedCounterpartyAddress}
+                          onSelectAddress={setSelectedCounterpartyAddress}
+                          graphAddresses={graphAddresses}
+                          onAddNode={handleGraphAddNode}
+                          onRemoveNode={handleGraphRemoveNode}
+                          onAddOverlay={handleAddOverlay}
+                          onTimeRangeChange={handleTimeRangeChange}
+                          graphFlowFilter={graphFlowFilter}
+                          onGraphFlowFilterChange={handleGraphFlowFilterChange}
+                          sortKey={tableSortKey}
+                          sortDir={tableSortDir}
+                          onSortChange={handleTableSortChange}
+                          surface="graph"
+                        />
+                      </div>
+                    </>
+                  )}
+                  {mode === "wallet" && (
+                    <div className="flex-none border-t border-border">
+                      <WalletOverlayPanel
+                        primaryAddress={address}
+                        primaryIdentity={identity}
+                        overlayWallets={overlayWallets}
+                        walletColors={walletColors}
+                        onAdd={handleAddOverlay}
+                        onRemove={handleRemoveOverlay}
+                        onColorChange={handleColorChange}
+                        disabled={!address}
+                        walletFilters={walletFilters}
+                        walletStats={walletStats}
+                        onWalletFilterChange={handleWalletFilterChange}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           )}
         </>
       )}
-
-      {mode === "tokens" && <TokenExplorer />}
 
       {mode === "programs" && (
         <div className="flex flex-1 items-center justify-center">

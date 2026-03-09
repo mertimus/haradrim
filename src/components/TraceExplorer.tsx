@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import type { Node, Edge } from "@xyflow/react";
 import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
+import { ExplorerLanding } from "@/components/ExplorerLanding";
+import { SearchBar } from "@/components/SearchBar";
 import { TraceGraph } from "@/components/TraceGraph";
 import { getIdentity } from "@/api";
 import type { WalletIdentity } from "@/api";
@@ -268,12 +270,6 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
     }
   }, [clearPanelSubscription, traceState, selectedNodeAddr]);
 
-  const handleSubmit = useCallback((e: React.FormEvent) => {
-    e.preventDefault();
-    const addr = inputValue.trim();
-    if (addr) startTrace(addr);
-  }, [inputValue, startTrace]);
-
   const handleBack = useCallback(() => {
     setSeedAddress("");
     setSeedIdentity(null);
@@ -350,36 +346,28 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
 
   if (!seedAddress && !loading) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-6">
-        <h2 className="font-mono text-xl font-bold tracking-wider text-primary text-glow-cyan">
-          TRACE ENTITY
-        </h2>
-        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-          Multi-hop fund flow exploration
-        </p>
-        <form onSubmit={handleSubmit} className="w-full max-w-md">
-          <div className="relative">
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Paste wallet address..."
-              className="w-full rounded border border-border bg-card px-3 py-2 pr-20 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30"
-            />
-            <button
-              type="submit"
-              className="absolute right-1 top-1 rounded bg-primary/10 px-3 py-1 font-mono text-[10px] uppercase tracking-widest text-primary transition-colors hover:bg-primary/20 cursor-pointer"
-            >
-              Trace
-            </button>
-          </div>
-        </form>
-        {traceError && (
+      <ExplorerLanding
+        mode="trace"
+        action={(
+          <SearchBar
+            onSearch={(address) => {
+              setInputValue(address);
+              void startTrace(address);
+            }}
+            loading={loading}
+            defaultValue={inputValue}
+            autoFocus
+            enableShortcut
+            placeholder="Paste wallet address..."
+            submitLabel="Trace"
+          />
+        )}
+        error={traceError ? (
           <div className="rounded border border-destructive/30 bg-destructive/5 px-3 py-2 font-mono text-[10px] text-destructive/90">
             {traceError}
           </div>
-        )}
-      </div>
+        ) : undefined}
+      />
     );
   }
 

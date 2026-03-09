@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -32,6 +33,8 @@ interface CounterpartyDetailPanelProps {
   onAddNode: (address: string) => void;
   onRemoveNode: (address: string) => void;
   onAddOverlay: (address: string) => void;
+  surface?: "graph" | "flow";
+  highlightCompareAction?: boolean;
 }
 
 function truncAddr(addr: string): string {
@@ -82,7 +85,38 @@ export function CounterpartyDetailPanel({
   onAddNode,
   onRemoveNode,
   onAddOverlay,
+  surface = "graph",
+  highlightCompareAction = false,
 }: CounterpartyDetailPanelProps) {
+  const detailAddress = detail?.address ?? "";
+  const typeLabel = detail ? accountTypeLabel(detail) : null;
+  const inGraph = detail ? graphAddresses.has(detail.address) : false;
+  const recentCutoff = DETAIL_RECENT_CUTOFF;
+  const showGraphActions = surface === "graph";
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  useEffect(() => {
+    setCopyState("idle");
+  }, [detailAddress]);
+
+  useEffect(() => {
+    if (copyState === "idle") return;
+    const timeoutId = window.setTimeout(() => {
+      setCopyState("idle");
+    }, 1400);
+    return () => window.clearTimeout(timeoutId);
+  }, [copyState]);
+
+  async function handleCopyAddress() {
+    if (!detailAddress) return;
+    try {
+      await navigator.clipboard.writeText(detailAddress);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
   if (loading && !detail) {
     return (
       <div className="scanline relative min-h-[124px] border border-border bg-card/90 p-2">
@@ -104,18 +138,18 @@ export function CounterpartyDetailPanel({
           Detail
         </div>
         <div className="mt-2 font-mono text-[11px] text-foreground">
-          Select a graph node or table row to inspect the relationship.
+          {surface === "graph"
+            ? "Select a graph node or table row to inspect the relationship."
+            : "Select a flow lane or table row to inspect the relationship."}
         </div>
         <div className="mt-1.5 font-mono text-[8px] leading-relaxed text-muted-foreground">
-          The panel shows direction, first and last activity, mutual wallet overlap, and quick actions.
+          {surface === "graph"
+            ? "The panel shows direction, first and last activity, mutual wallet overlap, and compare actions."
+            : "The panel shows direction, first and last activity, and the core flow stats for that relationship."}
         </div>
       </div>
     );
   }
-
-  const typeLabel = accountTypeLabel(detail);
-  const inGraph = graphAddresses.has(detail.address);
-  const recentCutoff = DETAIL_RECENT_CUTOFF;
 
   return (
     <div className="scanline relative max-h-[156px] overflow-y-auto border border-border bg-card/90 p-2">
@@ -128,12 +162,23 @@ export function CounterpartyDetailPanel({
             <div className="truncate font-mono text-[11px] font-bold text-primary">
               {detail.label ?? detail.tokenSymbol ?? truncAddr(detail.address)}
             </div>
+            <div className="shrink-0 font-mono text-[8px] text-muted-foreground">
+              {truncAddr(detailAddress)}
+            </div>
             <button
-              onClick={() => navigator.clipboard.writeText(detail.address)}
-              className="shrink-0 font-mono text-[8px] text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                void handleCopyAddress();
+              }}
+              className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[7px] uppercase tracking-[0.16em] transition-colors ${
+                copyState === "copied"
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : copyState === "failed"
+                    ? "border-destructive/40 bg-destructive/10 text-destructive"
+                    : "border-border bg-background/70 text-muted-foreground hover:border-primary/30 hover:text-primary"
+              }`}
               title="Copy address"
             >
-              {truncAddr(detail.address)}
+              {copyState === "copied" ? "Copied" : copyState === "failed" ? "Failed" : "Copy"}
             </button>
           </div>
         </div>
@@ -213,27 +258,35 @@ export function CounterpartyDetailPanel({
         >
           Navigate
         </button>
-        {inGraph ? (
-          <button
-            onClick={() => onRemoveNode(detail.address)}
-            className="rounded border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] text-destructive transition-colors hover:bg-destructive/20"
-          >
-            Remove Node
-          </button>
-        ) : (
-          <button
-            onClick={() => onAddNode(detail.address)}
-            className="rounded border border-border bg-background/70 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] text-foreground transition-colors hover:border-primary/30 hover:text-primary"
-          >
-            Add Node
-          </button>
+        {showGraphActions && (
+          <>
+            <button
+              onClick={() => onAddOverlay(detail.address)}
+              className={`rounded px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] transition-colors ${
+                highlightCompareAction
+                  ? "border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
+                  : "border border-border bg-background/70 text-foreground hover:border-primary/30 hover:text-primary"
+              }`}
+            >
+              Add to Compare
+            </button>
+            {inGraph ? (
+              <button
+                onClick={() => onRemoveNode(detail.address)}
+                className="rounded border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] text-destructive transition-colors hover:bg-destructive/20"
+              >
+                Remove Node
+              </button>
+            ) : (
+              <button
+                onClick={() => onAddNode(detail.address)}
+                className="rounded border border-border bg-background/70 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] text-foreground transition-colors hover:border-primary/30 hover:text-primary"
+              >
+                Add Node
+              </button>
+            )}
+          </>
         )}
-        <button
-          onClick={() => onAddOverlay(detail.address)}
-          className="rounded border border-border bg-background/70 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] text-foreground transition-colors hover:border-primary/30 hover:text-primary"
-        >
-          Full Graph
-        </button>
       </div>
     </div>
   );

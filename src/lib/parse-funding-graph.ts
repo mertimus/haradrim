@@ -1,208 +1,267 @@
-import type { Node, Edge } from "@xyflow/react";
+import type { Edge, Node } from "@xyflow/react";
 import {
-  forceSimulation,
   forceCollide,
   forceRadial,
+  forceSimulation,
   type SimulationNodeDatum,
 } from "d3-force";
-import type { FundingWalkResult } from "@/lib/funding-walk";
+import type { FundingEdge, FundingWalkResult } from "@/lib/funding-walk";
 
-// ---- Sizing ----
-
-const MIN_FUNDER = 50;
-const MAX_FUNDER = 130;
+const MIN_ANCESTOR = 50;
+const MAX_ANCESTOR = 130;
+const INTERMEDIATE_SIZE = 24;
 
 function funderSize(holdersFunded: number, maxFunded: number): number {
-  if (maxFunded <= 0) return MIN_FUNDER;
+  if (maxFunded <= 0) return MIN_ANCESTOR;
   const t = Math.log1p(holdersFunded) / Math.log1p(maxFunded);
-  return MIN_FUNDER + t * (MAX_FUNDER - MIN_FUNDER);
+  return MIN_ANCESTOR + t * (MAX_ANCESTOR - MIN_ANCESTOR);
 }
-
-// ---- Coloring ----
 
 function funderColor(holdersFunded: number, maxFunded: number): string {
   if (maxFunded <= 2) return holdersFunded >= 2 ? "#ff2d2d" : "#ffb800";
   const t = Math.log1p(holdersFunded) / Math.log1p(maxFunded);
   const r = 255;
   const g = Math.round(184 - t * 139);
-  const b = Math.round(0 + t * 45);
+  const b = Math.round(t * 45);
   return `rgb(${r}, ${g}, ${b})`;
 }
-
-// ---- Layout ----
 
 interface SimNode extends SimulationNodeDatum {
   id: string;
   radius: number;
+  preferredRadius: number;
 }
 
-/**
- * Append funding nodes onto an existing holder graph.
- *
- * Only adds **common funders** (holdersFunded >= 2) — intermediates are skipped.
- * Funders are placed in an outer ring well beyond the holder cluster.
- * Direct edges connect each funder to each holder it funded.
- */
+function collectDescendantHolders(
+  start: string,
+  holderAddrs: Set<string>,
+  funderTargets: Map<string, Set<string>>,
+): Set<string> {
+  const reached = new Set<string>();
+  const queue = [start];
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    if (holderAddrs.has(current) && current !== start) {
+      reached.add(current);
+      continue;
+    }
+    for (const target of funderTargets.get(current) ?? []) {
+      if (!visited.has(target)) queue.push(target);
+    }
+  }
+
+  return reached;
+}
+
+function buildIncludedSubgraph(
+  fundingResult: FundingWalkResult,
+): {
+  includedNodes: Set<string>;
+  includedEdges: FundingEdge[];
+  descendantHolders: Map<string, Set<string>>;
+} {
+  const holderAddrs = new Set<string>();
+  for (const [address, node] of fundingResult.nodes) {
+    if (node.isHolder) holderAddrs.add(address);
+  }
+
+  const funderTargets = new Map<string, Set<string>>();
+  for (const edge of fundingResult.edges) {
+    if (!funderTargets.has(edge.source)) funderTargets.set(edge.source, new Set());
+    funderTargets.get(edge.source)!.add(edge.target);
+  }
+
+  const descendantHolders = new Map<string, Set<string>>();
+  const includedNodes = new Set<string>();
+  for (const commonAncestor of fundingResult.commonFunders) {
+    const reached = collectDescendantHolders(
+      commonAncestor.address,
+      holderAddrs,
+      funderTargets,
+    );
+    if (reached.size === 0) continue;
+    descendantHolders.set(commonAncestor.address, reached);
+
+    const queue = [commonAncestor.address];
+    const visited = new Set<string>();
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      includedNodes.add(current);
+      for (const target of funderTargets.get(current) ?? []) {
+        queue.push(target);
+      }
+    }
+  }
+
+  const includedEdges = fundingResult.edges.filter(
+    (edge) => includedNodes.has(edge.source) && includedNodes.has(edge.target),
+  );
+
+  for (const address of includedNodes) {
+    if (!descendantHolders.has(address)) {
+      descendantHolders.set(
+        address,
+        collectDescendantHolders(address, holderAddrs, funderTargets),
+      );
+    }
+  }
+
+  return { includedNodes, includedEdges, descendantHolders };
+}
+
 export function appendFundingNodes(
   existingNodes: Node[],
   fundingResult: FundingWalkResult,
 ): { nodes: Node[]; edges: Edge[] } {
-  const { nodes: fnodes, edges: _fedges, commonFunders } = fundingResult;
+  if (fundingResult.commonFunders.length === 0) {
+    return { nodes: existingNodes, edges: [] };
+  }
 
-  if (commonFunders.length === 0) return { nodes: existingNodes, edges: [] };
+  const { includedNodes, includedEdges, descendantHolders } = buildIncludedSubgraph(
+    fundingResult,
+  );
+  if (includedNodes.size === 0) return { nodes: existingNodes, edges: [] };
 
-  const maxFunded = commonFunders[0].holdersFunded;
-
-  // Collect existing holder positions & compute cluster radius
+  const existingIds = new Set(existingNodes.map((node) => node.id));
   const holderPositions = new Map<string, { x: number; y: number }>();
   let maxHolderDist = 0;
   for (const node of existingNodes) {
     if (node.id === "token-center") continue;
-    const { x, y } = node.position;
-    holderPositions.set(node.id, { x, y });
-    const d = Math.sqrt(x * x + y * y);
-    if (d > maxHolderDist) maxHolderDist = d;
+    holderPositions.set(node.id, node.position);
+    const dist = Math.sqrt(node.position.x * node.position.x + node.position.y * node.position.y);
+    if (dist > maxHolderDist) maxHolderDist = dist;
   }
 
-  // Holder addresses in the graph
-  const holderAddrs = new Set<string>();
-  for (const [addr, fnode] of fnodes) {
-    if (fnode.isHolder) holderAddrs.add(addr);
-  }
+  const maxDepth = Math.max(
+    1,
+    ...Array.from(includedNodes).map(
+      (address) => fundingResult.nodes.get(address)?.depth ?? 1,
+    ),
+  );
+  const maxFunded = Math.max(
+    1,
+    ...fundingResult.commonFunders.map((node) => node.holdersFunded),
+  );
 
-  // Build downward adjacency from walk edges: source → targets
-  const funderTargets = new Map<string, Set<string>>();
-  for (const e of _fedges) {
-    if (!funderTargets.has(e.source)) funderTargets.set(e.source, new Set());
-    funderTargets.get(e.source)!.add(e.target);
-  }
+  const simulationNodes: SimNode[] = [];
+  const renderedNodes: Node[] = [];
 
-  // For each common funder, BFS down to find which holders it reaches
-  const funderToHolders = new Map<string, Set<string>>();
-  for (const cf of commonFunders) {
-    const reached = new Set<string>();
-    const queue = [cf.address];
-    const visited = new Set<string>();
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      if (visited.has(cur)) continue;
-      visited.add(cur);
-      if (holderAddrs.has(cur) && cur !== cf.address) {
-        reached.add(cur);
-        continue;
-      }
-      const targets = funderTargets.get(cur);
-      if (targets) {
-        for (const t of targets) if (!visited.has(t)) queue.push(t);
-      }
-    }
-    funderToHolders.set(cf.address, reached);
-  }
+  for (const address of includedNodes) {
+    if (existingIds.has(address)) continue;
+    const fundingNode = fundingResult.nodes.get(address);
+    if (!fundingNode) continue;
 
-  // Place funders in an outer ring
-  // Ring radius = holder cluster radius + generous gap
-  const ringRadius = maxHolderDist + 350;
-
-  const funderSimNodes: SimNode[] = [];
-  const funderRfNodes: Node[] = [];
-
-  for (let i = 0; i < commonFunders.length; i++) {
-    const cf = commonFunders[i];
-    const size = funderSize(cf.holdersFunded, maxFunded);
-    const reached = funderToHolders.get(cf.address) ?? new Set<string>();
-
-    // Compute centroid of funded holders to bias angular placement
+    const reached = descendantHolders.get(address) ?? new Set<string>();
     let cx = 0;
     let cy = 0;
     let count = 0;
-    for (const h of reached) {
-      const pos = holderPositions.get(h);
-      if (pos) {
-        cx += pos.x;
-        cy += pos.y;
-        count++;
-      }
+    for (const holder of reached) {
+      const pos = holderPositions.get(holder);
+      if (!pos) continue;
+      cx += pos.x;
+      cy += pos.y;
+      count += 1;
     }
 
-    let angle: number;
-    if (count > 0) {
-      cx /= count;
-      cy /= count;
-      angle = Math.atan2(cy, cx);
-    } else {
-      // Distribute evenly if no holder positions found
-      angle = (i / commonFunders.length) * Math.PI * 2;
-    }
-
-    const x = Math.cos(angle) * ringRadius;
-    const y = Math.sin(angle) * ringRadius;
-
-    funderSimNodes.push({ id: cf.address, x, y, radius: size / 2 });
-
-    const color = funderColor(cf.holdersFunded, maxFunded);
-    funderRfNodes.push({
-      id: cf.address,
-      type: "funderNode",
-      position: { x: 0, y: 0 }, // set after sim
-      data: {
-        address: cf.address,
-        label: cf.label,
-        holdersFunded: cf.holdersFunded,
-        holdersPctFunded: cf.holdersPctFunded,
-        nodeSize: size,
-        color,
-        isPrimary: cf.holdersFunded >= 3,
-      },
-    });
-  }
-
-  // Collision + radial sim to spread funders around the ring without overlap
-  if (funderSimNodes.length > 0) {
-    const sim = forceSimulation<SimNode>(funderSimNodes)
-      .force(
-        "collide",
-        forceCollide<SimNode>((d) => d.radius + 20).iterations(4),
-      )
-      .force(
-        "radial",
-        forceRadial<SimNode>(ringRadius, 0, 0).strength(0.8),
-      );
-    sim.stop();
-    for (let i = 0; i < 120; i++) sim.tick();
-
-    const simPos = new Map(
-      funderSimNodes.map((sn) => [sn.id, { x: sn.x ?? 0, y: sn.y ?? 0 }]),
+    const angle =
+      count > 0
+        ? Math.atan2(cy / count, cx / count)
+        : (renderedNodes.length / Math.max(includedNodes.size, 1)) * Math.PI * 2;
+    const preferredRadius = maxHolderDist + 70 + (fundingNode.depth / maxDepth) * 280;
+    const isCommonAncestor = fundingResult.commonFunders.some(
+      (node) => node.address === address,
     );
-    for (const node of funderRfNodes) {
-      const pos = simPos.get(node.id);
-      if (pos) node.position = pos;
-    }
-  }
+    const size = isCommonAncestor
+      ? funderSize(fundingNode.holdersFunded, maxFunded)
+      : INTERMEDIATE_SIZE;
 
-  // Build edges: funder → each funded holder
-  const edges: Edge[] = [];
-  let edgeIdx = 0;
-  for (const cf of commonFunders) {
-    const reached = funderToHolders.get(cf.address) ?? new Set<string>();
-    for (const holderAddr of reached) {
-      if (!holderPositions.has(holderAddr)) continue;
-      edges.push({
-        id: `fund-${edgeIdx++}`,
-        source: cf.address,
-        target: holderAddr,
-        type: "fundingEdge",
+    simulationNodes.push({
+      id: address,
+      radius: size / 2,
+      preferredRadius,
+      x: Math.cos(angle) * preferredRadius,
+      y: Math.sin(angle) * preferredRadius,
+    });
+
+    if (isCommonAncestor) {
+      renderedNodes.push({
+        id: address,
+        type: "funderNode",
+        position: { x: 0, y: 0 },
         data: {
-          amount: 0,
-          isHighlight: true,
-          thickness: 1.5 + Math.min((cf.holdersFunded / Math.max(maxFunded, 1)) * 1.5, 1.5),
-          opacity: 0.35 + Math.min((cf.holdersFunded / Math.max(maxFunded, 1)) * 0.25, 0.25),
+          address,
+          label: fundingNode.label,
+          holdersFunded: fundingNode.holdersFunded,
+          holdersPctFunded: fundingNode.holdersPctFunded,
+          nodeSize: size,
+          color: funderColor(fundingNode.holdersFunded, maxFunded),
+          isPrimary: fundingNode.holdersFunded >= 3,
+        },
+      });
+    } else {
+      renderedNodes.push({
+        id: address,
+        type: "intermediateNode",
+        position: { x: 0, y: 0 },
+        data: {
+          address,
+          label: fundingNode.label,
+          nodeSize: size,
+          color: "#3a4555",
         },
       });
     }
   }
 
+  if (simulationNodes.length > 0) {
+    const sim = forceSimulation<SimNode>(simulationNodes)
+      .force(
+        "collide",
+        forceCollide<SimNode>((node) => node.radius + 14).iterations(4),
+      )
+      .force(
+        "radial",
+        forceRadial<SimNode>((node) => node.preferredRadius, 0, 0).strength(0.9),
+      );
+    sim.stop();
+    for (let i = 0; i < 140; i++) sim.tick();
+
+    const positions = new Map(
+      simulationNodes.map((node) => [node.id, { x: node.x ?? 0, y: node.y ?? 0 }]),
+    );
+    for (const node of renderedNodes) {
+      const pos = positions.get(node.id);
+      if (pos) node.position = pos;
+    }
+  }
+
+  const edges: Edge[] = includedEdges
+    .filter((edge) => includedNodes.has(edge.source) && includedNodes.has(edge.target))
+    .map((edge, index) => {
+      const sourceNode = fundingResult.nodes.get(edge.source);
+      const weightBase = sourceNode?.holdersFunded ?? 1;
+      return {
+        id: `fund-${index}-${edge.source}-${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        type: "fundingEdge",
+        data: {
+          amount: edge.amount,
+          isHighlight: true,
+          thickness: 1.2 + Math.min(weightBase / Math.max(maxFunded, 1), 1.4),
+          opacity: 0.32 + Math.min(weightBase / Math.max(maxFunded, 1), 0.28),
+        },
+      };
+    });
+
   return {
-    nodes: [...existingNodes, ...funderRfNodes],
+    nodes: [...existingNodes, ...renderedNodes],
     edges,
   };
 }

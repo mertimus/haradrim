@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Table,
   TableBody,
@@ -10,7 +10,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { TokenHolder } from "@/birdeye-api";
 import { getHolderTier, TIER_COLORS } from "@/lib/parse-holders";
-import type { BundleGroup } from "@/lib/bundle-scan";
 
 function truncAddr(addr: string): string {
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
@@ -25,12 +24,11 @@ function fmtAmount(v: number): string {
 }
 
 function fmtPct(v: number): string {
-  if (v >= 1) return `${v.toFixed(2)}%`;
   if (v >= 0.01) return `${v.toFixed(2)}%`;
   return "<0.01%";
 }
 
-type SortKey = "pct" | "amount" | "slot";
+type SortKey = "amount" | "pct";
 type SortDir = "asc" | "desc";
 
 const TH =
@@ -47,7 +45,7 @@ function SortIcon({
 }) {
   const active = sortKey === col;
   return (
-    <span className="inline-flex flex-col ml-0.5 leading-none -my-0.5 align-middle">
+    <span className="ml-0.5 inline-flex flex-col leading-none align-middle">
       <span
         className={`text-[6px] leading-[7px] ${active && sortDir === "asc" ? "text-primary" : "text-muted-foreground/30"}`}
       >
@@ -62,155 +60,75 @@ function SortIcon({
   );
 }
 
-interface ContextMenuState {
-  address: string;
-  label?: string;
-  screenX: number;
-  screenY: number;
-}
-
-// Bundle color palette — distinct colors for each bundle group
-const BUNDLE_COLORS = [
-  "#a855f7", // purple
-  "#f97316", // orange
-  "#06b6d4", // cyan
-  "#ec4899", // pink
-  "#84cc16", // lime
-  "#eab308", // yellow
-  "#14b8a6", // teal
-  "#f43f5e", // rose
-];
-
 interface HolderTableProps {
   holders: TokenHolder[];
   loading: boolean;
   onHoverAddress: (address: string | null) => void;
-  firstBuySlots?: Map<string, number>;
-  bundleGroups?: BundleGroup[];
+  analysisScope?: Set<string> | null;
+  highlightedAddresses?: Set<string> | null;
 }
 
 export function HolderTable({
   holders,
   loading,
   onHoverAddress,
-  firstBuySlots,
-  bundleGroups,
+  analysisScope = null,
+  highlightedAddresses = null,
 }: HolderTableProps) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [searchQuery, setSearchQuery] = useState("");
-  const [showSearch, setShowSearch] = useState(false);
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [showAnalyzedOnly, setShowAnalyzedOnly] = useState(false);
+
+  useEffect(() => {
+    if (!analysisScope) {
+      setShowAnalyzedOnly(false);
+    }
+  }, [analysisScope]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
-      if (sortDir === "desc") setSortDir("asc");
-      else {
-        setSortKey(null);
-        setSortDir("desc");
-      }
-    } else {
-      setSortKey(key);
-      setSortDir("desc");
+      setSortDir((current) => (current === "desc" ? "asc" : "desc"));
+      return;
     }
+    setSortKey(key);
+    setSortDir("desc");
   };
 
   const filtered = useMemo(() => {
-    if (!searchQuery) return holders;
-    const q = searchQuery.toLowerCase();
-    return holders.filter(
-      (h) =>
-        h.owner.toLowerCase().includes(q) ||
-        (h.label && h.label.toLowerCase().includes(q)),
+    const query = searchQuery.trim().toLowerCase();
+    const scoped = showAnalyzedOnly && analysisScope
+      ? holders.filter((holder) => analysisScope.has(holder.owner))
+      : holders;
+    if (!query) return scoped;
+    return scoped.filter(
+      (holder) =>
+        holder.owner.toLowerCase().includes(query)
+        || holder.label?.toLowerCase().includes(query),
     );
-  }, [holders, searchQuery]);
+  }, [analysisScope, holders, searchQuery, showAnalyzedOnly]);
 
-  // Map address → color for bundle members
-  const bundleColorMap = useMemo(() => {
-    const map = new Map<string, string>();
-    if (!bundleGroups) return map;
-    for (let i = 0; i < bundleGroups.length; i++) {
-      const color = BUNDLE_COLORS[i % BUNDLE_COLORS.length];
-      for (const addr of bundleGroups[i].members) {
-        map.set(addr, color);
-      }
-    }
-    return map;
-  }, [bundleGroups]);
+  const rankMap = useMemo(
+    () => new Map(holders.map((holder, index) => [holder.owner, index + 1])),
+    [holders],
+  );
 
   const sorted = useMemo(() => {
     if (!sortKey) return filtered;
-    const mul = sortDir === "desc" ? -1 : 1;
+    const direction = sortDir === "desc" ? -1 : 1;
     return [...filtered].sort((a, b) => {
-      if (sortKey === "slot") {
-        const va = firstBuySlots?.get(a.owner) ?? Infinity;
-        const vb = firstBuySlots?.get(b.owner) ?? Infinity;
-        return mul * (va - vb);
-      }
-      const va = sortKey === "pct" ? a.percentage : a.uiAmount;
-      const vb = sortKey === "pct" ? b.percentage : b.uiAmount;
-      return mul * (va - vb);
+      const aValue = sortKey === "pct" ? a.percentage : a.uiAmount;
+      const bValue = sortKey === "pct" ? b.percentage : b.uiAmount;
+      return direction * (aValue - bValue);
     });
-  }, [filtered, sortKey, sortDir, firstBuySlots]);
-
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent, h: TokenHolder) => {
-      e.stopPropagation();
-      setContextMenu({
-        address: h.owner,
-        label: h.label,
-        screenX: e.clientX,
-        screenY: e.clientY,
-      });
-    },
-    [],
-  );
-
-  // Dismiss on Escape, click outside, scroll
-  useEffect(() => {
-    if (!contextMenu) return;
-    const dismiss = () => setContextMenu(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") dismiss();
-    };
-    const timer = setTimeout(() => {
-      window.addEventListener("click", dismiss);
-    }, 0);
-    window.addEventListener("keydown", onKey);
-    const scrollEl = scrollRef.current;
-    scrollEl?.addEventListener("scroll", dismiss);
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("click", dismiss);
-      scrollEl?.removeEventListener("scroll", dismiss);
-    };
-  }, [contextMenu]);
-
-  const menuStyle = contextMenu
-    ? (() => {
-        const menuW = 180;
-        const menuH = 80;
-        const x = Math.min(
-          contextMenu.screenX,
-          window.innerWidth - menuW - 8,
-        );
-        const y = Math.min(
-          contextMenu.screenY,
-          window.innerHeight - menuH - 8,
-        );
-        return { left: x, top: y };
-      })()
-    : null;
+  }, [filtered, sortDir, sortKey]);
 
   if (loading) {
     return (
       <div className="flex h-full flex-col overflow-y-auto p-2">
         <div className="space-y-1">
-          {Array.from({ length: 20 }).map((_, i) => (
-            <Skeleton key={i} className="h-5 w-full bg-muted" />
+          {Array.from({ length: 20 }).map((_, index) => (
+            <Skeleton key={index} className="h-5 w-full bg-muted" />
           ))}
         </div>
       </div>
@@ -218,271 +136,117 @@ export function HolderTable({
   }
 
   return (
-    <div ref={scrollRef} className="flex h-full flex-col overflow-y-auto">
-      {/* Summary strip */}
-      <div className="flex items-center gap-2 px-2 py-1 border-b border-border flex-none font-mono text-[8px] uppercase tracking-wider text-muted-foreground">
-        <span>{holders.length} Holders</span>
-        <span className="text-muted-foreground/30">|</span>
-        <span>
-          Top-10:{" "}
-          <span className="text-foreground">
-            {holders
-              .slice(0, 10)
-              .reduce((s, h) => s + h.percentage, 0)
-              .toFixed(1)}
-            %
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+            {holders.length.toLocaleString()} holders
           </span>
-        </span>
-        <span className="text-muted-foreground/30">|</span>
-        <span>
-          Top-20:{" "}
-          <span className="text-foreground">
-            {holders
-              .slice(0, 20)
-              .reduce((s, h) => s + h.percentage, 0)
-              .toFixed(1)}
-            %
-          </span>
-        </span>
-      </div>
-      <Table>
-        <TableHeader className="sticky top-0 bg-background z-10">
-          <TableRow className="border-border hover:bg-transparent [&>th]:py-0.5 [&>th]:px-1.5">
-            <TableHead className={`${TH} w-6 text-center`}>#</TableHead>
-            <TableHead
-              className={`${TH} cursor-pointer select-none hover:text-foreground transition-colors`}
-              onClick={() => {
-                setShowSearch((prev) => {
-                  if (prev) setSearchQuery("");
-                  return !prev;
-                });
-                setTimeout(() => searchInputRef.current?.focus(), 0);
-              }}
-            >
-              {showSearch ? (
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      setShowSearch(false);
-                      setSearchQuery("");
-                    }
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  placeholder="Search..."
-                  className="w-full bg-transparent border-b border-primary/30 text-[9px] font-mono text-foreground outline-none placeholder:text-muted-foreground/50 py-0"
-                  autoFocus
-                />
-              ) : (
-                <>
-                  Holder
-                  <span className="ml-1 text-muted-foreground/30">
-                    &#x1F50D;
-                  </span>
-                </>
-              )}
-            </TableHead>
-            <TableHead
-              className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`}
-              onClick={() => handleSort("amount")}
-            >
-              Amount
-              <SortIcon col="amount" sortKey={sortKey} sortDir={sortDir} />
-            </TableHead>
-            <TableHead
-              className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`}
-              onClick={() => handleSort("pct")}
-            >
-              %
-              <SortIcon col="pct" sortKey={sortKey} sortDir={sortDir} />
-            </TableHead>
-            {firstBuySlots && (
-              <TableHead
-                className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`}
-                onClick={() => handleSort("slot")}
+          {analysisScope && (
+            <>
+              <span className="font-mono text-[9px] text-muted-foreground">
+                analyzed {analysisScope.size}
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowAnalyzedOnly((current) => !current)}
+                className={`rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider transition-colors ${
+                  showAnalyzedOnly
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-border text-muted-foreground hover:text-primary"
+                }`}
               >
-                First Buy
-                <SortIcon col="slot" sortKey={sortKey} sortDir={sortDir} />
-              </TableHead>
-            )}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {sorted.map((h, i) => {
-            const tier = getHolderTier(h.percentage);
-            const tierColor = TIER_COLORS[tier];
-            return (
-              <TableRow
-                key={h.owner}
-                className="table-row-reveal table-row-hover cursor-pointer border-border [&>td]:py-0.5 [&>td]:px-1.5"
-                style={{ animationDelay: `${Math.min(i * 20, 400)}ms` }}
-                onClick={(e) => handleContextMenu(e, h)}
-                onMouseEnter={() => onHoverAddress(h.owner)}
-                onMouseLeave={() => onHoverAddress(null)}
-              >
-                <TableCell className="text-center font-mono text-[9px] text-muted-foreground/50 tabular-nums">
-                  {i + 1}
-                </TableCell>
-                <TableCell>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 font-mono text-[10px] text-foreground">
-                      <span
-                        className="h-1.5 w-1.5 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: tierColor }}
-                      />
-                      {truncAddr(h.owner)}
-                    </div>
-                    {h.label && (
-                      <div className="font-mono text-[9px] text-primary truncate max-w-[160px] leading-tight ml-3">
-                        {h.label}
-                      </div>
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell className="text-right font-mono text-[10px] text-foreground tabular-nums align-top">
-                  {fmtAmount(h.uiAmount)}
-                </TableCell>
-                <TableCell
-                  className="text-right font-mono text-[10px] tabular-nums align-top"
-                  style={{ color: tierColor }}
-                >
-                  {fmtPct(h.percentage)}
-                </TableCell>
-                {firstBuySlots && (
-                  <TableCell
-                    className="text-right font-mono text-[10px] tabular-nums align-top"
-                    style={{
-                      color: bundleColorMap.get(h.owner) ?? "#6b7b8d",
-                      fontWeight: bundleColorMap.has(h.owner) ? 600 : 400,
-                    }}
-                  >
-                    {firstBuySlots.has(h.owner)
-                      ? firstBuySlots.get(h.owner)!.toLocaleString()
-                      : "\u2014"}
-                  </TableCell>
-                )}
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
-
-      {/* Context menu */}
-      {contextMenu && menuStyle && (
-        <div
-          style={{
-            position: "fixed",
-            left: menuStyle.left,
-            top: menuStyle.top,
-            zIndex: 50,
-            background: "rgba(13, 19, 33, 0.95)",
-            border: "1px solid #1e2a3a",
-            borderRadius: 6,
-            padding: "8px 0",
-            fontFamily: "var(--font-mono)",
-            minWidth: 170,
-            boxShadow: "0 4px 24px rgba(0, 0, 0, 0.5)",
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div style={{ padding: "2px 12px 6px" }}>
-            <div
-              style={{
-                fontSize: 10,
-                color: "#c8d6e5",
-                letterSpacing: "0.03em",
-              }}
-            >
-              {truncAddr(contextMenu.address)}
-            </div>
-            {contextMenu.label && (
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "#00d4ff",
-                  fontWeight: 600,
-                  marginTop: 1,
-                }}
-              >
-                {contextMenu.label}
-              </div>
-            )}
-          </div>
-          <div
-            style={{
-              height: 1,
-              background: "#1e2a3a",
-              margin: "0 8px 4px",
-            }}
-          />
-          <button
-            onClick={() => {
-              navigator.clipboard.writeText(contextMenu.address);
-              setContextMenu(null);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              padding: "6px 12px",
-              background: "none",
-              border: "none",
-              color: "#c8d6e5",
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
-              cursor: "pointer",
-              textAlign: "left",
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "rgba(0, 212, 255, 0.08)";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = "none";
-            }}
-          >
-            <span style={{ fontSize: 13 }}>&#x2398;</span>
-            Copy Address
-          </button>
-          <button
-            onClick={() => {
-              window.open(
-                `https://solscan.io/account/${contextMenu.address}`,
-                "_blank",
-              );
-              setContextMenu(null);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              padding: "6px 12px",
-              background: "none",
-              border: "none",
-              color: "#c8d6e5",
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
-              cursor: "pointer",
-              textAlign: "left",
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "rgba(0, 212, 255, 0.08)";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = "none";
-            }}
-          >
-            <span style={{ fontSize: 13 }}>&rarr;</span>
-            View on Solscan
-          </button>
+                Analyzed only
+              </button>
+            </>
+          )}
         </div>
-      )}
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search holder..."
+          className="h-7 w-40 rounded border border-border bg-card px-2 font-mono text-[10px] text-foreground outline-none placeholder:text-muted-foreground/50 focus:border-primary/40"
+        />
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <Table>
+          <TableHeader className="sticky top-0 z-10 bg-background">
+            <TableRow className="border-border hover:bg-transparent [&>th]:px-1.5 [&>th]:py-1">
+              <TableHead className={`${TH} w-8 text-center`}>Rank</TableHead>
+              <TableHead className={TH}>Holder</TableHead>
+              <TableHead
+                className={`${TH} cursor-pointer select-none text-right hover:text-foreground transition-colors`}
+                onClick={() => handleSort("amount")}
+              >
+                Amount
+                <SortIcon col="amount" sortKey={sortKey} sortDir={sortDir} />
+              </TableHead>
+              <TableHead
+                className={`${TH} cursor-pointer select-none text-right hover:text-foreground transition-colors`}
+                onClick={() => handleSort("pct")}
+              >
+                %
+                <SortIcon col="pct" sortKey={sortKey} sortDir={sortDir} />
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map((holder, index) => {
+              const tier = getHolderTier(holder.percentage);
+              const tierColor = TIER_COLORS[tier];
+              const inScope = !analysisScope || analysisScope.has(holder.owner);
+              const highlighted = !highlightedAddresses || highlightedAddresses.has(holder.owner);
+
+              return (
+                <TableRow
+                  key={holder.owner}
+                  className="table-row-reveal table-row-hover border-border [&>td]:px-1.5 [&>td]:py-0.5"
+                  style={{
+                    animationDelay: `${Math.min(index * 20, 400)}ms`,
+                    opacity: inScope ? (highlighted ? 1 : 0.55) : 0.4,
+                    backgroundColor: highlightedAddresses && highlighted
+                      ? "rgba(0, 212, 255, 0.05)"
+                      : undefined,
+                  }}
+                  onMouseEnter={() => onHoverAddress(holder.owner)}
+                  onMouseLeave={() => onHoverAddress(null)}
+                >
+                  <TableCell className="text-center font-mono text-[9px] text-muted-foreground/50 tabular-nums">
+                    {rankMap.get(holder.owner) ?? index + 1}
+                  </TableCell>
+                  <TableCell>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 font-mono text-[10px] text-foreground">
+                        <span
+                          className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
+                          style={{ backgroundColor: tierColor }}
+                        />
+                        {truncAddr(holder.owner)}
+                      </div>
+                      {holder.label && (
+                        <div className="ml-3 max-w-[160px] truncate font-mono text-[9px] leading-tight text-primary">
+                          {holder.label}
+                        </div>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right font-mono text-[10px] text-foreground tabular-nums">
+                    {fmtAmount(holder.uiAmount)}
+                  </TableCell>
+                  <TableCell
+                    className="text-right font-mono text-[10px] tabular-nums"
+                    style={{ color: tierColor }}
+                  >
+                    {fmtPct(holder.percentage)}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 }

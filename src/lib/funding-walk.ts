@@ -162,23 +162,6 @@ async function _walkFundingHistory(
     });
   }
 
-  // Post-process: compute holdersFunded via reverse walk from each holder
-  for (const holderAddr of holderAddrs) {
-    const visited = new Set<string>();
-    let current = holderAddr;
-    while (current) {
-      if (visited.has(current)) break;
-      visited.add(current);
-      const node = nodes.get(current);
-      if (!node) break;
-      if (current !== holderAddr) {
-        node.holdersFunded++;
-      }
-      current = node.fundedBy!;
-    }
-  }
-
-  // Also count via edges for convergence paths not captured by single fundedBy
   // Build adjacency: target → set of sources (funders)
   const funderOf = new Map<string, Set<string>>(); // funded → set of funders
   for (const e of edges) {
@@ -212,9 +195,12 @@ async function _walkFundingHistory(
   // Update holdersFunded + holdersPctFunded from holderReach
   for (const [addr, reachedHolders] of holderReach) {
     const node = nodes.get(addr);
-    if (node && !node.isHolder) {
-      node.holdersFunded = reachedHolders.size;
-      node.holdersPctFunded = [...reachedHolders].reduce((sum, h) => {
+    if (node) {
+      const effectiveReached = [...reachedHolders].filter(
+        (holderAddr) => !(node.isHolder && holderAddr === addr),
+      );
+      node.holdersFunded = effectiveReached.length;
+      node.holdersPctFunded = effectiveReached.reduce((sum, h) => {
         const hn = nodes.get(h);
         return sum + (hn?.holderPct ?? 0);
       }, 0);
@@ -223,8 +209,13 @@ async function _walkFundingHistory(
 
   // Extract common funders
   const commonFunders = Array.from(nodes.values())
-    .filter((n) => n.holdersFunded >= 2 && !n.isHolder)
-    .sort((a, b) => b.holdersFunded - a.holdersFunded);
+    .filter((n) => n.holdersFunded >= 2)
+    .sort((a, b) => {
+      if (b.holdersFunded !== a.holdersFunded) {
+        return b.holdersFunded - a.holdersFunded;
+      }
+      return b.holdersPctFunded - a.holdersPctFunded;
+    });
 
   onProgress?.({
     phase: "enriching",

@@ -3,6 +3,7 @@ import {
   GTFA_SIGNATURE_PAGE_LIMIT,
   GTFA_FULL_PAGE_LIMIT,
   GTFA_TOKEN_ACCOUNTS_MODE,
+  HELIUS_ENHANCED_API_ORIGIN,
   HELIUS_API_KEY,
   HELIUS_API_ORIGIN,
   HELIUS_RPC_URL,
@@ -18,6 +19,7 @@ import { cachedValue } from "./cache.mjs";
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+const OWNER_MINT_TOKEN_ACCOUNTS_TTL_MS = 15 * 60 * 1000;
 
 export async function fetchWithTimeout(input, init = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -70,7 +72,7 @@ async function retryingJsonRequest(makeRequest) {
   throw lastError ?? new Error("request exceeded retry budget");
 }
 
-async function rpcJson(method, params) {
+export async function rpcJson(method, params) {
   return retryingJsonRequest(() =>
     fetchWithTimeout(HELIUS_RPC_URL, {
       method: "POST",
@@ -85,13 +87,63 @@ async function rpcJson(method, params) {
   );
 }
 
+function heliusApiKey() {
+  if (HELIUS_API_KEY) return HELIUS_API_KEY;
+  try {
+    return new URL(HELIUS_RPC_URL).searchParams.get("api-key") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function buildEnhancedTransactionsUrl() {
+  const url = new URL("/v0/transactions", HELIUS_ENHANCED_API_ORIGIN);
+  const apiKey = heliusApiKey();
+  if (apiKey) {
+    url.searchParams.set("api-key", apiKey);
+  }
+  return url.toString();
+}
+
 export function buildWalletApiUrl(pathname) {
   const normalizedPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
   const url = new URL(normalizedPath, HELIUS_API_ORIGIN);
-  if (HELIUS_API_KEY) {
-    url.searchParams.set("api-key", HELIUS_API_KEY);
+  const apiKey = heliusApiKey();
+  if (apiKey) {
+    url.searchParams.set("api-key", apiKey);
   }
   return url.toString();
+}
+
+export async function parseEnhancedTransactions(signatures) {
+  const unique = [...new Set(signatures)].filter(Boolean);
+  if (unique.length === 0) return [];
+
+  const results = [];
+  const url = buildEnhancedTransactionsUrl();
+
+  for (let index = 0; index < unique.length; index += 100) {
+    const chunk = unique.slice(index, index + 100);
+    const json = await retryingJsonRequest(() =>
+      fetchWithTimeout(url, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          transactions: chunk,
+        }),
+      }),
+    );
+    if (Array.isArray(json)) {
+      results.push(...json);
+    } else if (Array.isArray(json?.result)) {
+      results.push(...json.result);
+    }
+  }
+
+  return results;
 }
 
 async function walletApiJson(pathname, init = {}) {
@@ -157,7 +209,7 @@ async function gtfaPage(address, opts = {}) {
   const params = {
     transactionDetails: "full",
     sortOrder: opts.sortOrder ?? "asc",
-    limit: GTFA_FULL_PAGE_LIMIT,
+    limit: opts.limit ?? GTFA_FULL_PAGE_LIMIT,
     commitment: "confirmed",
     encoding: "jsonParsed",
     maxSupportedTransactionVersion: 0,
@@ -254,7 +306,7 @@ function createUniformSlices(firstTs, nowTs, count) {
   return slices;
 }
 
-async function mapWithConcurrency(items, limit, worker) {
+export async function mapWithConcurrency(items, limit, worker) {
   if (items.length === 0) return [];
   const results = new Array(items.length);
   let nextIndex = 0;
@@ -346,6 +398,42 @@ export async function fetchTransactions(address, range = {}) {
     );
 
     return deduplicateTransactions(results.flat());
+  });
+}
+
+export async function fetchRecentTransactions(address, options = {}) {
+  const limit = Math.max(1, Math.min(Number(options.limit ?? 1200), 5000));
+  const cacheKey = `txRecent:${address}:${limit}`;
+
+  return cachedValue(cacheKey, 10 * 60 * 1000, async () => {
+    const all = [];
+    let token;
+    const seenTokens = new Set();
+
+    while (all.length < limit) {
+      const page = await gtfaPage(address, {
+        sortOrder: "desc",
+        limit: Math.min(GTFA_FULL_PAGE_LIMIT, limit - all.length),
+        paginationToken: token,
+      });
+
+      const { txs, nextToken } = page;
+      all.push(...txs);
+
+      if (!nextToken) {
+        token = undefined;
+        break;
+      }
+
+      if (seenTokens.has(nextToken)) {
+        throw new Error(`GTFA recent pagination repeated for ${address}`);
+      }
+
+      seenTokens.add(nextToken);
+      token = nextToken;
+    }
+
+    return deduplicateTransactions(all);
   });
 }
 
@@ -481,5 +569,38 @@ export async function getAccountTypesParallel(addresses) {
       }
     }
     return map;
+  });
+}
+
+async function fetchOwnerTokenAccountsForProgram(owner, mint, programId) {
+  const json = await rpcJson("getTokenAccountsByOwner", [
+    owner,
+    { programId },
+    { encoding: "jsonParsed", commitment: "confirmed" },
+  ]);
+
+  const accounts = json.result?.value ?? [];
+  return accounts
+    .filter((account) => account?.account?.data?.parsed?.info?.mint === mint)
+    .map((account) => account?.pubkey ?? "")
+    .filter(Boolean);
+}
+
+export async function getTokenAccountAddressesByOwner(owner, mint) {
+  const cacheKey = `ownerMintTokenAccounts:${owner}:${mint}`;
+  return cachedValue(cacheKey, OWNER_MINT_TOKEN_ACCOUNTS_TTL_MS, async () => {
+    const results = await Promise.allSettled([
+      fetchOwnerTokenAccountsForProgram(owner, mint, TOKEN_PROGRAM),
+      fetchOwnerTokenAccountsForProgram(owner, mint, TOKEN_2022_PROGRAM),
+    ]);
+
+    const addresses = new Set();
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      for (const address of result.value) {
+        addresses.add(address);
+      }
+    }
+    return [...addresses];
   });
 }

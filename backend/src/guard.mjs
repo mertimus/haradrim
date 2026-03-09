@@ -4,6 +4,10 @@ import {
   IP_BUDGET_UNITS,
   IP_WINDOW_MS,
   MAX_GTFA_RPC_CONCURRENCY,
+  MAX_ENHANCED_HISTORY_CONCURRENCY,
+  MAX_PROVENANCE_ANALYSIS_CONCURRENCY,
+  MAX_TOKEN_FORENSICS_CONCURRENCY,
+  MAX_TOKEN_SNAPSHOT_CONCURRENCY,
   MAX_TRACE_ANALYSIS_CONCURRENCY,
   MAX_WALLET_ANALYSIS_CONCURRENCY,
   SESSION_BUDGET_UNITS,
@@ -11,6 +15,8 @@ import {
   SESSION_SECRET,
   SESSION_WINDOW_MS,
 } from "./config.mjs";
+
+const GUARDS_ENABLED = process.env.NODE_ENV === "production";
 
 const usageBySession = new Map();
 const usageByIp = new Map();
@@ -34,6 +40,30 @@ export const HEAVY_ROUTE_POLICIES = {
     cost: 10,
     concurrencyLabel: "gtfa-rpc",
     maxConcurrency: MAX_GTFA_RPC_CONCURRENCY,
+  },
+  enhancedHistory: {
+    routeKey: "enhanced-history",
+    cost: 6,
+    concurrencyLabel: "enhanced-history",
+    maxConcurrency: MAX_ENHANCED_HISTORY_CONCURRENCY,
+  },
+  provenanceAnalysis: {
+    routeKey: "provenance-analysis",
+    cost: 12,
+    concurrencyLabel: "provenance-analysis",
+    maxConcurrency: MAX_PROVENANCE_ANALYSIS_CONCURRENCY,
+  },
+  tokenSnapshot: {
+    routeKey: "token-snapshot",
+    cost: 6,
+    concurrencyLabel: "token-snapshot",
+    maxConcurrency: MAX_TOKEN_SNAPSHOT_CONCURRENCY,
+  },
+  tokenForensics: {
+    routeKey: "token-forensics",
+    cost: 14,
+    concurrencyLabel: "token-forensics",
+    maxConcurrency: MAX_TOKEN_FORENSICS_CONCURRENCY,
   },
 };
 
@@ -157,6 +187,8 @@ export function createHttpError(statusCode, error, message, details = {}) {
 }
 
 export function enforceHeavyRouteBudget(req, res, policy) {
+  if (!GUARDS_ENABLED) return;
+
   const now = Date.now();
   const sessionId = ensureAnonymousSession(req, res);
   const ip = identifyClientIp(req);
@@ -193,6 +225,10 @@ export function enforceHeavyRouteBudget(req, res, policy) {
 }
 
 export async function withConcurrencyLimit(label, maxConcurrency, task) {
+  if (!GUARDS_ENABLED) {
+    return task();
+  }
+
   const active = concurrencyByRoute.get(label) ?? 0;
   if (active >= maxConcurrency) {
     throw createHttpError(429, "route_busy", `Too many concurrent ${label} requests`, {
@@ -211,9 +247,19 @@ export async function withConcurrencyLimit(label, maxConcurrency, task) {
 }
 
 export function getGuardStats() {
+  if (!GUARDS_ENABLED) {
+    return {
+      enabled: false,
+      sessionWindows: 0,
+      ipWindows: 0,
+      concurrency: {},
+    };
+  }
+
   pruneUsageStore(usageBySession);
   pruneUsageStore(usageByIp);
   return {
+    enabled: true,
     sessionWindows: usageBySession.size,
     ipWindows: usageByIp.size,
     concurrency: Object.fromEntries(concurrencyByRoute),

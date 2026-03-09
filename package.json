@@ -4,9 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "backend:dev": "npm --prefix backend run dev",
-    "backend:start": "npm --prefix backend run start",
-    "dev": "vite",
+    "backend:dev": "sh -c 'if [ -f .env.local ]; then node --env-file=.env.local backend/server.mjs; else node backend/server.mjs; fi'",
+    "backend:start": "sh -c 'if [ -f .env.local ]; then node --env-file=.env.local backend/server.mjs; else node backend/server.mjs; fi'",
+    "dev": "sh -c 'npm run backend:dev & backend_pid=$!; trap \"kill $backend_pid\" EXIT INT TERM; vite'",
+    "dev:frontend": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

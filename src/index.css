@@ -285,6 +285,27 @@
     will-change: filter;
 }
 
+.wallet-flow-lane {
+    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.wallet-flow-lane.flow-lane-highlighted {
+    transform: translateY(-1px);
+    border-color: rgba(0, 212, 255, 0.45) !important;
+    box-shadow: 0 0 18px rgba(0, 212, 255, 0.14);
+}
+
+.flow-scroll-column {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.flow-scroll-column::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
 /* Volume slider */
 .volume-slider {
     -webkit-appearance: none;

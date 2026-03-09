@@ -9,8 +9,12 @@ import {
 export interface ConnectionEdgeData {
   txCount: number;
   bidirectional: boolean;
+  sourceToTargetTxCount: number;
+  targetToSourceTxCount: number;
   thickness: number;
   opacity: number;
+  firstSeen: number;
+  lastSeen: number;
   [key: string]: unknown;
 }
 
@@ -29,13 +33,17 @@ const TOOLTIP_STYLE: React.CSSProperties = {
 
 export const ConnectionEdge = memo(function ConnectionEdge({
   id,
+  source,
   sourceX,
   sourceY,
+  target,
   targetX,
   targetY,
   data,
 }: EdgeProps<Edge<ConnectionEdgeData>>) {
   const d = data as ConnectionEdgeData;
+  const shortAddr = (address: string | null | undefined) =>
+    address ? `${address.slice(0, 4)}...${address.slice(-4)}` : "unknown";
 
   const [edgePath, labelX, labelY] = getStraightPath({
     sourceX,
@@ -45,6 +53,8 @@ export const ConnectionEdge = memo(function ConnectionEdge({
   });
 
   const strokeColor = "#ffffff"; // White — matches Bubblemaps style
+  const fmtDate = (timestamp: number) =>
+    timestamp > 0 ? new Date(timestamp * 1000).toISOString().slice(0, 10) : "unknown";
 
   return (
     <g
@@ -76,17 +86,23 @@ export const ConnectionEdge = memo(function ConnectionEdge({
       />
       {/* Tooltip — CSS toggles opacity on hover */}
       <foreignObject
-        x={labelX - 60}
-        y={labelY - 28}
-        width={120}
-        height={56}
+        x={labelX - 80}
+        y={labelY - 34}
+        width={160}
+        height={72}
         className="conn-edge-tooltip"
         style={{ overflow: "visible" }}
       >
         <div style={TOOLTIP_STYLE}>
-          <div>{d.txCount} shared tx{d.txCount !== 1 ? "s" : ""}</div>
+          <div>{d.txCount} unique tx{d.txCount !== 1 ? "s" : ""}</div>
           <div style={{ color: "#6b7b8d" }}>
-            {d.bidirectional ? "Bidirectional" : "One-way"}
+            {shortAddr(source)} → {shortAddr(target)}: {d.sourceToTargetTxCount}
+          </div>
+          <div style={{ color: "#6b7b8d" }}>
+            {shortAddr(target)} → {shortAddr(source)}: {d.targetToSourceTxCount}
+          </div>
+          <div style={{ color: "#6b7b8d" }}>
+            {d.bidirectional ? "Bidirectional flow" : "One-way flow"} | last {fmtDate(d.lastSeen)}
           </div>
         </div>
       </foreignObject>

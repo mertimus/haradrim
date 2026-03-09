@@ -46,12 +46,32 @@ export interface CounterpartyFlow {
 
 export type GraphFlowFilter = "all" | "inflow" | "outflow";
 
+export interface ParsedTransferEvent {
+  counterparty: string;
+  direction: "inflow" | "outflow";
+  kind: "native" | "token";
+  assetId: string;
+  mint?: string;
+  symbol?: string;
+  name?: string;
+  logoUri?: string;
+  decimals?: number;
+  uiAmount: number;
+}
+
+export interface ParsedTransactionProgram {
+  id: string;
+  label: string;
+}
+
 export interface ParsedTransaction {
   signature: string;
   timestamp: number;
   solChange: number;
   walletBalanceAfter: number;
   counterparties: string[];
+  transfers: ParsedTransferEvent[];
+  programs: ParsedTransactionProgram[];
   fee: number;
 }
 
@@ -76,6 +96,8 @@ interface MutableParsedTransaction {
   solChange: number;
   walletBalanceAfter: number;
   counterparties: Set<string>;
+  transfers: ParsedTransferEvent[];
+  programs: ParsedTransactionProgram[];
   fee: number;
 }
 
@@ -312,6 +334,61 @@ function collectWalletMints(
   }
 }
 
+const IGNORED_TX_PROGRAM_IDS = new Set([
+  SYSTEM_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  ...TOKEN_PROGRAM_IDS,
+  "ComputeBudget111111111111111111111111111111",
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+  "Memo1UhkJBfCR6MNLc4u1mfLsJgGT2ciczyG5hXVfHi",
+]);
+
+const PROGRAM_LABELS = new Map<string, string>([
+  ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "Jupiter V6"],
+  ["whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc", "Orca Whirlpool"],
+  ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", "Raydium AMM"],
+  ["CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK", "Raydium CLMM"],
+  ["srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX", "OpenBook"],
+  ["auth9SigNpDKz4sJJ1DfCTuZrZNSAgh9sFD3rboVmgg", "Squads V4"],
+  ["metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s", "Metaplex"],
+  ["namesLPneVptA9Z5rqUDD9tMTWEJwofgaYwp8cawRkX", "SNS"],
+]);
+
+function prettifyProgramName(name: string): string {
+  return name
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b[a-z]/g, (match) => match.toUpperCase());
+}
+
+function collectTransactionPrograms(tx: RpcTransaction): ParsedTransactionProgram[] {
+  const programs = new Map<string, ParsedTransactionProgram>();
+
+  for (const instruction of flattenInstructions(tx)) {
+    const programId = instruction.programId ?? "";
+    const programName = typeof instruction.program === "string" ? instruction.program : "";
+    if (programId && IGNORED_TX_PROGRAM_IDS.has(programId)) continue;
+    if (!programId && (!programName || programName === "system")) continue;
+
+    const label =
+      (programId ? PROGRAM_LABELS.get(programId) : undefined)
+      ?? (programName && !["system", "spl-token", "spl-associated-token-account"].includes(programName)
+        ? prettifyProgramName(programName)
+        : "")
+      ?? "";
+
+    const key = programId || programName;
+    if (!key || programs.has(key)) continue;
+    programs.set(key, {
+      id: key,
+      label: label || `${key.slice(0, 4)}...${key.slice(-4)}`,
+    });
+  }
+
+  return [...programs.values()];
+}
+
 function walletSolChange(tx: RpcTransaction, walletAddress: string): number {
   const accountKeys = tx.transaction.message.accountKeys.map(resolveKey);
   const walletIndex = accountKeys.indexOf(walletAddress);
@@ -357,6 +434,8 @@ export function accumulateWalletParseResult(
       solChange: walletSolChange(tx, walletAddress),
       walletBalanceAfter: walletPostBalance(tx, walletAddress),
       counterparties: new Set<string>(),
+      transfers: [],
+      programs: collectTransactionPrograms(tx),
       fee: tx.meta.fee / LAMPORTS_PER_SOL,
     });
     freshTxs.push(tx);
@@ -383,6 +462,15 @@ export function accumulateWalletParseResult(
 
     const txEntry = accumulator.transactions.get(event.signature);
     txEntry?.counterparties.add(event.counterparty);
+    txEntry?.transfers.push({
+      counterparty: event.counterparty,
+      direction: event.direction,
+      kind: event.kind,
+      assetId: event.assetId,
+      mint: event.mint,
+      decimals: event.decimals,
+      uiAmount: event.uiAmount,
+    });
   }
 }
 
@@ -411,6 +499,8 @@ export function finalizeWalletParseAccumulator(
       solChange: tx.solChange,
       walletBalanceAfter: tx.walletBalanceAfter,
       counterparties: [...tx.counterparties],
+      transfers: tx.transfers,
+      programs: tx.programs,
       fee: tx.fee,
     }))
     .sort((a, b) => b.timestamp - a.timestamp);
@@ -595,10 +685,6 @@ function logScale(value: number, max: number, minOut: number, maxOut: number): n
   return minOut + norm * (maxOut - minOut);
 }
 
-function dominantFlowDirection(cp: Pick<CounterpartyFlow, "solSent" | "solReceived">): "inflow" | "outflow" {
-  return cp.solSent > cp.solReceived ? "outflow" : "inflow";
-}
-
 function interpolateAngle(index: number, total: number, startDeg: number, endDeg: number): number {
   const start = (startDeg * Math.PI) / 180;
   const end = (endDeg * Math.PI) / 180;
@@ -607,42 +693,59 @@ function interpolateAngle(index: number, total: number, startDeg: number, endDeg
   return start + (end - start) * t;
 }
 
-function buildSingleWalletAnchorMap(
-  counterparties: CounterpartyFlow[],
-  maxVolume: number,
-  maxTx: number,
-): Map<string, { x: number; y: number }> {
-  const anchorMap = new Map<string, { x: number; y: number }>();
-  const outflows = counterparties.filter((cp) => dominantFlowDirection(cp) === "outflow");
-  const inflows = counterparties.filter((cp) => dominantFlowDirection(cp) === "inflow");
+function ringCapacity(ringIndex: number): number {
+  return 5 + ringIndex * 3;
+}
 
-  const assignArc = (
+function ringIndexForRank(rank: number): number {
+  let remaining = rank;
+  let ringIndex = 0;
+  while (remaining >= ringCapacity(ringIndex)) {
+    remaining -= ringCapacity(ringIndex);
+    ringIndex += 1;
+  }
+  return ringIndex;
+}
+
+function buildSingleWalletPositionMap(
+  counterparties: CounterpartyFlow[],
+): Map<string, { x: number; y: number }> {
+  const positionMap = new Map<string, { x: number; y: number }>();
+  const rings = new Map<number, CounterpartyFlow[]>();
+
+  counterparties.forEach((cp, rank) => {
+    const ringIndex = ringIndexForRank(rank);
+    const ring = rings.get(ringIndex) ?? [];
+    ring.push(cp);
+    rings.set(ringIndex, ring);
+  });
+
+  const assignRing = (
     items: CounterpartyFlow[],
+    radius: number,
     startDeg: number,
     endDeg: number,
   ) => {
     items.forEach((cp, index) => {
-      const volume = cp.solSent + cp.solReceived;
-      const importance = (volume / maxVolume) * 0.6 + (cp.txCount / maxTx) * 0.4;
-      const radius = logScale(1 - importance, 1, 165, 355);
       const angle = interpolateAngle(index, items.length, startDeg, endDeg);
-      anchorMap.set(cp.address, {
+      positionMap.set(cp.address, {
         x: Math.cos(angle) * radius,
         y: Math.sin(angle) * radius,
       });
     });
   };
 
-  if (outflows.length > 0 && inflows.length > 0) {
-    assignArc(outflows, 110, 250);
-    assignArc(inflows, -70, 70);
-  } else if (outflows.length > 0) {
-    assignArc(outflows, 100, 260);
-  } else {
-    assignArc(inflows, -80, 80);
+  for (const [ringIndex, ringItems] of rings.entries()) {
+    // Rank determines orbit. Angle is only for distributing nodes cleanly around the ring.
+    const radius = 180 + ringIndex * 68;
+    const startDeg = -90 + ringIndex * 12;
+    const endDeg = ringItems.length <= 1
+      ? startDeg + 360
+      : startDeg + 360 - (360 / ringItems.length);
+    assignRing(ringItems, radius, startDeg, endDeg);
   }
 
-  return anchorMap;
+  return positionMap;
 }
 
 export interface GraphOverrides {
@@ -675,101 +778,22 @@ export function buildGraphData(
   );
   const maxTx = Math.max(...top50.map((c) => c.txCount), 1);
 
-  // Sort by importance for tier assignment (volume-weighted)
-  const sorted = [...top50].sort((a, b) => {
-    const impA = (a.solSent + a.solReceived) / maxVolume * 0.6 + a.txCount / maxTx * 0.4;
-    const impB = (b.solSent + b.solReceived) / maxVolume * 0.6 + b.txCount / maxTx * 0.4;
-    return impB - impA;
-  });
   const tierMap = new Map<string, number>();
-  sorted.forEach((cp, i) => {
+  top50.forEach((cp, i) => {
     tierMap.set(cp.address, i < 5 ? 1 : i < 15 ? 2 : 3);
   });
 
-  // Compute node widths with log scaling: 100px - 180px
-  const NODE_MIN = 100;
-  const NODE_MAX = 180;
+  // Node size is the one node-side encoding: tx count.
+  const NODE_MIN = 72;
+  const NODE_MAX = 124;
   const CENTER_SIZE = 160;
 
   const cpSizes = new Map<string, number>();
   for (const cp of top50) {
-    const volume = cp.solSent + cp.solReceived;
-    const importance = (volume / maxVolume) * 0.6 + (cp.txCount / maxTx) * 0.4;
-    cpSizes.set(cp.address, logScale(importance, 1, NODE_MIN, NODE_MAX));
+    cpSizes.set(cp.address, logScale(cp.txCount, maxTx, NODE_MIN, NODE_MAX));
   }
 
-  const anchorMap = buildSingleWalletAnchorMap(top50, maxVolume, maxTx);
-
-  // Build force simulation nodes
-  const simNodes: ForceNode[] = [
-    {
-      id: walletAddress,
-      isCenter: true,
-      importance: 1,
-      nodeSize: CENTER_SIZE,
-      fx: 0,
-      fy: 0,
-    },
-    ...top50.map((cp) => {
-      const volume = cp.solSent + cp.solReceived;
-      const importance = (volume / maxVolume) * 0.6 + (cp.txCount / maxTx) * 0.4;
-      const anchor = anchorMap.get(cp.address);
-      return {
-        id: cp.address,
-        isCenter: false,
-        importance,
-        nodeSize: cpSizes.get(cp.address) ?? NODE_MIN,
-        anchorX: anchor?.x,
-        anchorY: anchor?.y,
-      };
-    }),
-  ];
-
-  // Build force simulation links
-  // Higher importance = shorter distance = closer to center
-  const simLinks: ForceLink[] = top50.map((cp) => {
-    const volume = cp.solSent + cp.solReceived;
-    const importance = (volume / maxVolume) * 0.6 + (cp.txCount / maxTx) * 0.4;
-    const distance = logScale(1 - importance, 1, 140, 350);
-    return {
-      source: walletAddress,
-      target: cp.address,
-      distance,
-    };
-  });
-
-  // Run simulation synchronously
-  const sim = forceSimulation<ForceNode>(simNodes)
-    .force(
-      "link",
-      forceLink<ForceNode, ForceLink>(simLinks)
-        .id((d) => d.id)
-        .distance((d) => d.distance)
-        .strength(1.2),
-    )
-    .force("charge", forceManyBody<ForceNode>().strength(-250))
-    .force("center", forceCenter(0, 0).strength(0.1))
-    .force(
-      "collide",
-      forceCollide<ForceNode>().radius((d) => d.nodeSize * 0.55 + 15).strength(0.8),
-    )
-    .force(
-      "anchorX",
-      forceX<ForceNode>((d) => d.anchorX ?? 0).strength((d) => (d.isCenter ? 0 : 0.42)),
-    )
-    .force(
-      "anchorY",
-      forceY<ForceNode>((d) => d.anchorY ?? 0).strength((d) => (d.isCenter ? 0 : 0.42)),
-    )
-    .stop();
-
-  for (let i = 0; i < 300; i++) sim.tick();
-
-  // Build positions lookup
-  const posMap = new Map<string, { x: number; y: number }>();
-  for (const sn of simNodes) {
-    posMap.set(sn.id, { x: sn.x ?? 0, y: sn.y ?? 0 });
-  }
+  const posMap = buildSingleWalletPositionMap(top50);
 
   // Build React Flow nodes
   const nodes: Node[] = [
@@ -785,8 +809,9 @@ export function buildGraphData(
         tier: 0,
         volume: maxVolume,
         maxVolume,
+        layoutMode: "single-wallet",
       },
-      position: posMap.get(walletAddress) ?? { x: 0, y: 0 },
+      position: { x: 0, y: 0 },
     },
     ...top50.map((cp) => {
       const volume = cp.solSent + cp.solReceived;
@@ -810,17 +835,18 @@ export function buildGraphData(
           tokenName: cp.tokenName,
           tokenSymbol: cp.tokenSymbol,
           tokenLogoUri: cp.tokenLogoUri,
+          layoutMode: "single-wallet",
         },
         position: posMap.get(cp.address) ?? { x: 0, y: 0 },
       };
     }),
   ];
 
-  // Build edges — thickness 1-6px, log-scaled
+  // Edge intensity is the one edge-side encoding: SOL volume.
   const edges: Edge[] = top50.map((cp) => {
     const volume = cp.solSent + cp.solReceived;
-    const thickness = logScale(volume, maxVolume, 1, 6);
     const isOutflow = cp.solSent > cp.solReceived;
+    const intensity = maxVolume > 0 ? Math.max(0.15, volume / maxVolume) : 0.15;
 
     return {
       id: `${walletAddress}-${cp.address}`,
@@ -832,7 +858,8 @@ export function buildGraphData(
         solReceived: cp.solReceived,
         txCount: cp.txCount,
         isOutflow,
-        thickness,
+        thickness: 2.25,
+        intensity,
         volume,
         maxVolume,
       },

@@ -7,6 +7,10 @@ const RPC_URL = HELIUS_RPC_URL;
 const TTL_TRENDING = 5 * 60 * 1000;   // 5 min
 const TTL_OVERVIEW = 5 * 60 * 1000;   // 5 min
 const TTL_HOLDERS = 10 * 60 * 1000;   // 10 min
+const SPL_TOKEN_PROGRAM_IDS = [
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+];
 
 const HEADERS: HeadersInit = {
   "x-chain": "solana",
@@ -41,9 +45,43 @@ export interface TokenHolder {
   uiAmount: number;
   percentage: number;
   label?: string;
+  ownerAccountType?: "wallet" | "program" | "token" | "other" | "unknown";
+  ownerProgram?: string;
+  ownerProgramLabel?: string;
+}
+
+interface RpcTokenAccountInfo {
+  owner?: string;
+  tokenAmount?: {
+    uiAmount?: number | null;
+    uiAmountString?: string;
+  };
+}
+
+interface RpcTokenAccount {
+  account?: {
+    data?: {
+      parsed?: {
+        info?: RpcTokenAccountInfo;
+      };
+    };
+  };
 }
 
 // ---- Solana RPC: get token supply ----
+
+async function getBirdeyeSupply(mint: string): Promise<number> {
+  try {
+    const res = await fetch(`${BASE}/defi/token_overview?address=${mint}`, {
+      headers: HEADERS,
+    });
+    if (!res.ok) return 0;
+    const json = await res.json();
+    return Number(json.data?.supply ?? 0);
+  } catch {
+    return 0;
+  }
+}
 
 async function getTokenSupply(mint: string): Promise<number> {
   try {
@@ -57,12 +95,45 @@ async function getTokenSupply(mint: string): Promise<number> {
         params: [mint],
       }),
     });
-    if (!res.ok) return 0;
+    if (!res.ok) return getBirdeyeSupply(mint);
     const json = await res.json();
-    return json.result?.value?.uiAmount ?? 0;
+    const supply = json.result?.value?.uiAmount ?? 0;
+    return supply > 0 ? supply : getBirdeyeSupply(mint);
   } catch {
-    return 0;
+    return getBirdeyeSupply(mint);
   }
+}
+
+async function getProgramTokenAccounts(
+  mint: string,
+  programId: string,
+): Promise<RpcTokenAccount[]> {
+  const res = await fetch(RPC_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getProgramAccounts",
+      params: [
+        programId,
+        {
+          encoding: "jsonParsed",
+          filters: [
+            { dataSize: 165 },
+            { memcmp: { offset: 0, bytes: mint } },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Unable to fetch token accounts for program ${programId}.`);
+  }
+
+  const json = await res.json();
+  return Array.isArray(json.result) ? json.result : [];
 }
 
 // ---- API Functions ----
@@ -134,64 +205,61 @@ export function getTokenOverview(
   );
 }
 
-// ---- Holders via Helius getTokenLargestAccountsV2 ----
-// Direct on-chain data — works for ALL SPL tokens, not dependent on Birdeye indexing
-
 async function _getTokenHolders(
   address: string,
-  limit = 100,
+  limit?: number,
 ): Promise<TokenHolder[]> {
-  // Fetch largest accounts and supply in parallel
-  const [holdersRes, supply] = await Promise.all([
-    fetch(RPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getTokenLargestAccountsV2",
-        params: [address, { commitment: "finalized" }],
-      }),
-    }),
-    getTokenSupply(address),
-  ]);
+  const supply = await getTokenSupply(address);
+  if (supply <= 0) {
+    throw new Error("Unable to fetch token supply.");
+  }
 
-  if (!holdersRes.ok) return [];
-  const json = await holdersRes.json();
-  if (json.error) return [];
-
-  const accounts: Record<string, unknown>[] =
-    json.result?.value?.accounts ?? json.result?.accounts ?? [];
-  if (!Array.isArray(accounts)) return [];
-
-  // Merge multiple token accounts held by the same owner.
   const ownerTotals = new Map<string, number>();
-  for (const a of accounts) {
-    const owner = String(a.owner ?? "");
-    if (!owner) continue;
-    const uiAmount = Number(a.uiAmount ?? 0);
-    if (!Number.isFinite(uiAmount) || uiAmount <= 0) continue;
-    ownerTotals.set(owner, (ownerTotals.get(owner) ?? 0) + uiAmount);
+  const tokenAccountsByProgram = await Promise.all(
+    SPL_TOKEN_PROGRAM_IDS.map((programId) =>
+      getProgramTokenAccounts(address, programId),
+    ),
+  );
+
+  let foundPositiveBalance = false;
+  for (const tokenAccounts of tokenAccountsByProgram) {
+    for (const tokenAccount of tokenAccounts) {
+      const info = tokenAccount.account?.data?.parsed?.info;
+      const owner = info?.owner ?? "";
+      if (!owner) continue;
+
+      const amountRaw =
+        info?.tokenAmount?.uiAmount
+        ?? Number(info?.tokenAmount?.uiAmountString ?? 0);
+      const uiAmount = Number(amountRaw);
+      if (!Number.isFinite(uiAmount) || uiAmount <= 0) continue;
+
+      foundPositiveBalance = true;
+      ownerTotals.set(owner, (ownerTotals.get(owner) ?? 0) + uiAmount);
+    }
+  }
+
+  if (!foundPositiveBalance) {
+    throw new Error("No holder data returned for token.");
   }
 
   const holders = Array.from(ownerTotals.entries())
     .map(([owner, uiAmount]) => ({
       owner,
       uiAmount,
-      percentage: supply > 0 ? (uiAmount / supply) * 100 : 0,
+      percentage: (uiAmount / supply) * 100,
     }))
     .sort((a, b) => b.uiAmount - a.uiAmount)
-    .slice(0, limit);
+    .slice(0, limit ?? Number.POSITIVE_INFINITY);
 
   return holders;
 }
 
 export function getTokenHolders(
   address: string,
-  limit = 100,
+  limit?: number,
 ): Promise<TokenHolder[]> {
-  // v3: switched from Birdeye to Helius getTokenLargestAccountsV2
-  return cached("hlHolders", `${address}:${limit}`, TTL_HOLDERS, () =>
+  return cached("rpcHoldersV1", `${address}:${limit ?? "all"}`, TTL_HOLDERS, () =>
     _getTokenHolders(address, limit),
   );
 }

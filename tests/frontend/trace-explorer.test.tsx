@@ -5,6 +5,8 @@ import { getIdentity } from "@/api";
 
 vi.mock("@/api", () => ({
   getIdentity: vi.fn(),
+  resolveWalletInput: vi.fn(async (value: string) => value),
+  rememberPreferredSolDomain: vi.fn(),
 }));
 
 vi.mock("@/lib/backend-api", () => ({

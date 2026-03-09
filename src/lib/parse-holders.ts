@@ -1,19 +1,13 @@
 import type { Node, Edge } from "@xyflow/react";
-import {
-  forceSimulation,
-  forceCollide,
-  forceRadial,
-  forceCenter,
-  forceManyBody,
-  forceLink,
-  type SimulationNodeDatum,
-  type SimulationLinkDatum,
-} from "d3-force";
 import type { TokenOverview, TokenHolder } from "@/birdeye-api";
 import type {
   HolderConnection,
   HolderCluster,
 } from "@/lib/scan-holder-connections";
+import type {
+  ForensicEvidenceEdge,
+  SuspiciousCluster,
+} from "@/lib/suspicious-clusters";
 
 // ---- Concentration tiers ----
 
@@ -59,6 +53,7 @@ export const CLUSTER_COLORS = [
 ];
 
 const DIMMED_COLOR = "#2a3545"; // unconnected holders in connection mode
+const OUT_OF_SCOPE_COLOR = "#18222e";
 
 // ---- Bubble sizing ----
 
@@ -88,26 +83,49 @@ function logScale(
 }
 
 // ---- Build graph data ----
+const CENTER_NODE_Y = -220;
+const PYRAMID_START_Y = 0;
+const PYRAMID_ROW_GAP = 36;
+const PYRAMID_COL_GAP = 18;
+const PYRAMID_ROW_CAP_GROWTH = 1;
 
-interface SimNode extends SimulationNodeDatum {
-  id: string;
-  radius: number;
+export interface HolderGraphBuildOptions {
+  connections?: HolderConnection[];
+  clusters?: HolderCluster[];
+  forensicEdges?: ForensicEvidenceEdge[];
+  forensicClusters?: SuspiciousCluster[];
+  mode?: "tiers" | "connections" | "funding" | "bundles" | "forensics";
+  analysisScope?: Set<string>;
+  holderCountOverride?: number;
 }
 
 export function buildHolderGraphData(
   holders: TokenHolder[],
   overview: TokenOverview | null,
-  connections?: HolderConnection[],
-  clusters?: HolderCluster[],
+  options: HolderGraphBuildOptions = {},
 ): { nodes: Node[]; edges: Edge[] } {
   if (holders.length === 0) return { nodes: [], edges: [] };
 
-  const hasConnections = connections && connections.length > 0;
+  const {
+    connections,
+    clusters,
+    forensicEdges,
+    forensicClusters,
+    mode = connections && connections.length > 0 ? "connections" : "tiers",
+    analysisScope,
+    holderCountOverride,
+  } = options;
+  const connectionEdges =
+    mode === "forensics" ? forensicEdges : connections;
+  const clusterList =
+    mode === "forensics" ? forensicClusters : clusters;
+  const hasConnections = connectionEdges && connectionEdges.length > 0;
+  const holderIds = new Set(holders.map((holder) => holder.owner));
 
   // Build cluster membership map: address → clusterId
   const clusterMap = new Map<string, number>();
-  if (clusters && clusters.length > 0) {
-    for (const c of clusters) {
+  if (clusterList && clusterList.length > 0) {
+    for (const c of clusterList) {
       for (const member of c.members) {
         clusterMap.set(member, c.id);
       }
@@ -119,114 +137,54 @@ export function buildHolderGraphData(
   const centerNode: Node = {
     id: "token-center",
     type: "bubbleNode",
-    position: { x: 0, y: 0 },
+    position: { x: 0, y: CENTER_NODE_Y },
     data: {
       isCenter: true,
       image: overview?.image ?? "",
       symbol: overview?.symbol ?? "",
-      holderCount: overview?.holder ?? holders.length,
+      holderCount: holderCountOverride ?? overview?.holder ?? holders.length,
       nodeSize: centerSize,
     },
   };
 
-  // Holder bubble nodes
-  const simNodes: SimNode[] = holders.map((h, i) => {
-    const size = bubbleSize(h.percentage);
-    return {
-      id: h.owner,
-      index: i,
-      radius: size / 2,
-      x: 0,
-      y: 0,
-    };
-  });
+  const sizes = holders.map((holder) => bubbleSize(holder.percentage));
+  const positions = buildPyramidPositions(sizes);
 
-  const idToIndex = new Map(simNodes.map((n, i) => [n.id, i]));
+  const holderNodes: Node[] = holders.map((holder, i) => {
+    const tier = getHolderTier(holder.percentage);
+    const size = sizes[i];
+    const inAnalysisScope = !analysisScope || analysisScope.has(holder.owner);
+    const outOfScope = !inAnalysisScope;
 
-  // Force simulation — parameters change based on connection mode
-  const sim = forceSimulation<SimNode>(simNodes)
-    .force(
-      "collide",
-      forceCollide<SimNode>((d) => d.radius + 4).iterations(4),
-    )
-    .force(
-      "radial",
-      forceRadial<SimNode>(
-        (d) => {
-          const maxR = MAX_BUBBLE / 2;
-          const normR = d.radius / maxR;
-          return 150 + (1 - normR) * 300;
-        },
-        0,
-        0,
-      ).strength(hasConnections ? 0.15 : 0.8), // Much weaker radial in connection mode
-    )
-    .force("center", forceCenter(0, 0).strength(0.05))
-    .force(
-      "charge",
-      forceManyBody().strength(hasConnections ? -100 : -30), // Stronger repulsion in connection mode
-    );
-
-  // Link forces — pull connected wallets tightly together
-  if (hasConnections) {
-    const maxTx = Math.max(...connections!.map((c) => c.txCount));
-    const links: SimulationLinkDatum<SimNode>[] = connections!
-      .filter(
-        (c) => idToIndex.has(c.source) && idToIndex.has(c.target),
-      )
-      .map((c) => ({
-        source: idToIndex.get(c.source)!,
-        target: idToIndex.get(c.target)!,
-        txCount: c.txCount,
-      }));
-
-    if (links.length > 0) {
-      sim.force(
-        "link",
-        forceLink<SimNode, SimulationLinkDatum<SimNode>>(links)
-          .distance((l) => {
-            const tc = (l as unknown as { txCount: number }).txCount;
-            return logScale(tc, maxTx, 60, 25); // Very tight: 60 → 25
-          })
-          .strength((l) => {
-            const tc = (l as unknown as { txCount: number }).txCount;
-            return logScale(tc, maxTx, 0.7, 1.0); // Very strong attraction
-          }),
-      );
-    }
-  }
-
-  sim.stop();
-  for (let i = 0; i < 300; i++) sim.tick();
-
-  const holderNodes: Node[] = simNodes.map((sn, i) => {
-    const h = holders[i];
-    const tier = getHolderTier(h.percentage);
-    const size = sn.radius * 2;
-
-    // In connection mode: cluster color or dimmed gray
-    const clusterId = clusterMap.get(h.owner);
+    const clusterId = clusterMap.get(holder.owner);
     const inCluster = clusterId != null;
-    const color = hasConnections
-      ? inCluster
-        ? CLUSTER_COLORS[clusterId! % CLUSTER_COLORS.length]
-        : DIMMED_COLOR
-      : TIER_COLORS[tier];
+    const color =
+      mode === "connections" || mode === "forensics"
+        ? outOfScope
+          ? OUT_OF_SCOPE_COLOR
+          : inCluster
+            ? CLUSTER_COLORS[clusterId! % CLUSTER_COLORS.length]
+            : mode === "forensics"
+              ? "#1f2b39"
+              : DIMMED_COLOR
+        : TIER_COLORS[tier];
 
     return {
-      id: h.owner,
+      id: holder.owner,
       type: "bubbleNode",
-      position: { x: sn.x ?? 0, y: sn.y ?? 0 },
+      position: positions[i],
       data: {
         isCenter: false,
-        address: h.owner,
-        label: h.label,
-        percentage: h.percentage,
-        uiAmount: h.uiAmount,
+        address: holder.owner,
+        label: holder.label,
+        percentage: holder.percentage,
+        uiAmount: holder.uiAmount,
         tier,
         color,
         nodeSize: size,
-        inCluster, // used by BubbleNode to disable whale pulse
+        inCluster,
+        outOfScope,
+        suppressTierPulse: mode === "forensics",
       },
     };
   });
@@ -234,10 +192,29 @@ export function buildHolderGraphData(
   // Build edges
   let edges: Edge[] = [];
   if (hasConnections) {
-    const maxTx = Math.max(...connections!.map((c) => c.txCount));
-    edges = connections!
+    if (mode === "forensics") {
+      const maxScore = Math.max(...(forensicEdges ?? []).map((edge) => edge.totalScore));
+      edges = (forensicEdges ?? [])
+        .filter(
+          (edge) => holderIds.has(edge.source) && holderIds.has(edge.target),
+        )
+        .map((edge) => ({
+          id: `forensic-${edge.source}-${edge.target}`,
+          source: edge.source,
+          target: edge.target,
+          type: "evidenceEdge",
+          animated: false,
+          data: {
+            ...edge,
+            thickness: logScale(edge.totalScore, maxScore, 1.5, 4.8),
+            opacity: logScale(edge.totalScore, maxScore, 0.38, 0.88),
+          },
+        }));
+    } else {
+      const maxTx = Math.max(...connections!.map((c) => c.txCount));
+      edges = connections!
       .filter(
-        (c) => idToIndex.has(c.source) && idToIndex.has(c.target),
+        (c) => holderIds.has(c.source) && holderIds.has(c.target),
       )
       .map((c) => ({
         id: `conn-${c.source}-${c.target}`,
@@ -251,7 +228,49 @@ export function buildHolderGraphData(
           opacity: logScale(c.txCount, maxTx, 0.5, 0.9),
         },
       }));
+    }
   }
 
   return { nodes: [centerNode, ...holderNodes], edges };
+}
+
+function rowCapacityFor(index: number): number {
+  return Math.max(1, index + PYRAMID_ROW_CAP_GROWTH);
+}
+
+function buildPyramidPositions(sizes: number[]): Array<{ x: number; y: number }> {
+  const rows: number[][] = [];
+  let cursor = 0;
+  let rowIndex = 0;
+
+  while (cursor < sizes.length) {
+    const capacity = rowCapacityFor(rowIndex);
+    rows.push(sizes.slice(cursor, cursor + capacity));
+    cursor += capacity;
+    rowIndex += 1;
+  }
+
+  const positions: Array<{ x: number; y: number }> = new Array(sizes.length);
+  let runningIndex = 0;
+  let currentY = PYRAMID_START_Y;
+
+  for (const row of rows) {
+    const rowWidth = row.reduce((sum, size) => sum + size, 0)
+      + Math.max(0, row.length - 1) * PYRAMID_COL_GAP;
+    let currentX = -rowWidth / 2;
+    const rowMaxSize = Math.max(...row);
+
+    for (const size of row) {
+      positions[runningIndex] = {
+        x: currentX + size / 2,
+        y: currentY,
+      };
+      currentX += size + PYRAMID_COL_GAP;
+      runningIndex += 1;
+    }
+
+    currentY += rowMaxSize + PYRAMID_ROW_GAP;
+  }
+
+  return positions;
 }

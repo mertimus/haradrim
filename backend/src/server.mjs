@@ -12,6 +12,10 @@ import {
   REQUEST_BODY_LIMIT_BYTES,
   TRACE_ANALYSIS_TTL_MS,
   WALLET_ANALYSIS_TTL_MS,
+  ENHANCED_HISTORY_TTL_MS,
+  PROVENANCE_ANALYSIS_TTL_MS,
+  TOKEN_FORENSICS_TTL_MS,
+  TOKEN_SNAPSHOT_TTL_MS,
 } from "./config.mjs";
 import { cachedValue, getCacheSize, getCachedValue, getInflightValue, setCachedValue } from "./cache.mjs";
 import {
@@ -22,13 +26,17 @@ import {
   withConcurrencyLimit,
 } from "./guard.mjs";
 import { analyzeTrace, analyzeWallet } from "./analysis-core.mjs";
-import { buildWalletApiUrl, fetchWithTimeout } from "./providers.mjs";
+import { analyzeWalletMintProvenance } from "./provenance-core.mjs";
+import { buildTokenHolderSnapshot } from "./token-snapshot-core.mjs";
+import { analyzeTokenForensics } from "./token-forensics-core.mjs";
+import { buildWalletApiUrl, fetchWithTimeout, parseEnhancedTransactions } from "./providers.mjs";
 
 const ALLOWED_RPC_METHODS = new Map([
   ["getTransactionsForAddress", { heavy: true }],
   ["getAssetBatch", { heavy: false }],
   ["getMultipleAccounts", { heavy: false }],
   ["getProgramAccounts", { heavy: false }],
+  ["getProgramAccountsV2", { heavy: false }],
   ["getTokenSupply", { heavy: false }],
   ["getTokenLargestAccountsV2", { heavy: false }],
 ]);
@@ -55,6 +63,7 @@ const ALLOWED_HELIUS_API_ROUTES = [
 const ALLOWED_BIRDEYE_PATHS = new Map([
   ["/birdeye-api/defi/token_trending", new Set(["GET"])],
   ["/birdeye-api/defi/token_overview", new Set(["GET"])],
+  ["/birdeye-api/defi/v3/token/holder", new Set(["GET"])],
 ]);
 
 function sha1(input) {
@@ -108,6 +117,68 @@ function matchTraceAnalysis(pathname) {
   return pathname.match(/^\/traces\/([A-Za-z0-9]+)\/flows$/);
 }
 
+function matchEnhancedCounterpartyHistory(pathname) {
+  return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/counterparties\/([A-Za-z0-9]+)\/enhanced-history$/);
+}
+
+function matchWalletTokenProvenance(pathname) {
+  return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/tokens\/([A-Za-z0-9]+)\/provenance$/);
+}
+
+function matchTokenHolders(pathname) {
+  return pathname.match(/^\/tokens\/([A-Za-z0-9]+)\/holders$/);
+}
+
+function matchTokenForensics(pathname) {
+  return pathname.match(/^\/tokens\/([A-Za-z0-9]+)\/forensics$/);
+}
+
+const GENERIC_HELIUS_SOURCES = new Set([
+  "SYSTEM_PROGRAM",
+  "SOLANA_PROGRAM_LIBRARY",
+  "UNKNOWN",
+]);
+
+function prettifyHeliusSource(source) {
+  if (!source) return "";
+  return source
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b[a-z]/g, (match) => match.toUpperCase())
+    .trim();
+}
+
+function normalizeProgramList(source, programs) {
+  const deduped = [];
+  const seen = new Set();
+
+  const push = (id, label) => {
+    const key = `${id}:${label}`;
+    if (!id || !label || seen.has(key)) return;
+    seen.add(key);
+    deduped.push({ id, label });
+  };
+
+  if (source && !GENERIC_HELIUS_SOURCES.has(source)) {
+    push(source, prettifyHeliusSource(source));
+  }
+  for (const program of programs ?? []) {
+    push(program.id, program.label);
+  }
+  if (source && GENERIC_HELIUS_SOURCES.has(source)) {
+    push(source, prettifyHeliusSource(source));
+  }
+
+  return deduped;
+}
+
+function chooseProtocolLabel(source, programs) {
+  if (source && !GENERIC_HELIUS_SOURCES.has(source)) {
+    return prettifyHeliusSource(source);
+  }
+  return programs?.[0]?.label ?? "";
+}
+
 function assertAllowedMethod(method, allowedMethods, pathname) {
   if (!allowedMethods.has(method)) {
     throw createHttpError(405, "method_not_allowed", `Method ${method} not allowed for ${pathname}`);
@@ -144,6 +215,7 @@ function ttlForHeliusApi(pathname) {
 
 function ttlForBirdeye(pathname) {
   if (pathname.includes("/token_trending") || pathname.includes("/token_overview")) return 5 * 60 * 1000;
+  if (pathname.includes("/token/holder")) return 10 * 60 * 1000;
   return 0;
 }
 
@@ -288,6 +360,144 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
   sendJson(res, 200, result);
 }
 
+async function handleEnhancedCounterpartyHistory(req, res, address, counterparty, searchParams) {
+  const range = parseRange(searchParams);
+  const walletCacheKey = `wallet-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}`;
+  const analysis = getCachedValue(walletCacheKey)
+    ?? await cachedValue(walletCacheKey, WALLET_ANALYSIS_TTL_MS, () => analyzeWallet(address, range));
+
+  const cacheKey = `enhanced-history:${address}:${counterparty}:${range.start ?? "all"}:${range.end ?? "all"}`;
+  const cached = getCachedValue(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  const pending = getInflightValue(cacheKey);
+  if (pending) {
+    sendJson(res, 200, await pending);
+    return;
+  }
+
+  const matchingSignatures = analysis.transactions
+    .filter((tx) => tx.transfers.some((transfer) => transfer.counterparty === counterparty))
+    .map((tx) => tx.signature);
+
+  if (matchingSignatures.length === 0) {
+    sendJson(res, 200, { counterparty, annotations: [] });
+    return;
+  }
+
+  enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.enhancedHistory);
+  const result = await withConcurrencyLimit(
+    HEAVY_ROUTE_POLICIES.enhancedHistory.concurrencyLabel,
+    HEAVY_ROUTE_POLICIES.enhancedHistory.maxConcurrency,
+    () => cachedValue(cacheKey, ENHANCED_HISTORY_TTL_MS, async () => {
+      const parsed = await parseEnhancedTransactions(matchingSignatures);
+      const parsedBySignature = new Map(parsed.map((tx) => [tx.signature, tx]));
+      const txBySignature = new Map(analysis.transactions.map((tx) => [tx.signature, tx]));
+      return {
+        counterparty,
+        annotations: matchingSignatures.map((signature) => {
+          const tx = parsedBySignature.get(signature);
+          const local = txBySignature.get(signature);
+          const programs = normalizeProgramList(tx?.source, local?.programs ?? []);
+          return {
+            signature,
+            type: tx?.type,
+            description: tx?.description,
+            source: tx?.source,
+            protocol: chooseProtocolLabel(tx?.source, programs),
+            programs,
+            timestamp: tx?.timestamp ?? local?.timestamp,
+          };
+        }),
+      };
+    }),
+  );
+  sendJson(res, 200, result);
+}
+
+async function handleWalletTokenProvenance(req, res, address, mint, searchParams) {
+  const maxDepth = Number(searchParams.get("maxDepth") ?? "");
+  const candidateLimit = Number(searchParams.get("candidateLimit") ?? "");
+  const options = {
+    ...(Number.isFinite(maxDepth) ? { maxDepth } : {}),
+    ...(Number.isFinite(candidateLimit) ? { candidateLimit } : {}),
+  };
+  const cacheKey = `wallet-token-provenance:${address}:${mint}:${options.maxDepth ?? "default"}:${options.candidateLimit ?? "default"}`;
+  const cached = getCachedValue(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  const pending = getInflightValue(cacheKey);
+  if (pending) {
+    sendJson(res, 200, await pending);
+    return;
+  }
+
+  enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.provenanceAnalysis);
+  const result = await withConcurrencyLimit(
+    HEAVY_ROUTE_POLICIES.provenanceAnalysis.concurrencyLabel,
+    HEAVY_ROUTE_POLICIES.provenanceAnalysis.maxConcurrency,
+    () =>
+      cachedValue(
+        cacheKey,
+        PROVENANCE_ANALYSIS_TTL_MS,
+        () => analyzeWalletMintProvenance(address, mint, options),
+      ),
+  );
+  sendJson(res, 200, result);
+}
+
+async function handleTokenHolderSnapshot(req, res, mint, searchParams) {
+  const limit = Number(searchParams.get("limit") ?? "");
+  const options = {
+    ...(Number.isFinite(limit) ? { limit } : {}),
+  };
+  const cacheKey = `token-holder-snapshot:v2:${mint}:${options.limit ?? "all"}`;
+  const result = await cachedValue(
+    cacheKey,
+    TOKEN_SNAPSHOT_TTL_MS,
+    async () => {
+      enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.tokenSnapshot);
+      return withConcurrencyLimit(
+        HEAVY_ROUTE_POLICIES.tokenSnapshot.concurrencyLabel,
+        HEAVY_ROUTE_POLICIES.tokenSnapshot.maxConcurrency,
+        () => buildTokenHolderSnapshot(mint, options),
+      );
+    },
+  );
+  sendJson(res, 200, result);
+}
+
+async function handleTokenForensics(req, res, mint, searchParams) {
+  const scopeLimit = Number(searchParams.get("scopeLimit") ?? "");
+  const maxDepth = Number(searchParams.get("maxDepth") ?? "");
+  const candidateLimit = Number(searchParams.get("candidateLimit") ?? "");
+  const options = {
+    ...(Number.isFinite(scopeLimit) ? { scopeLimit } : {}),
+    ...(Number.isFinite(maxDepth) ? { maxDepth } : {}),
+    ...(Number.isFinite(candidateLimit) ? { candidateLimit } : {}),
+  };
+  const cacheKey = `token-forensics:${mint}:${options.scopeLimit ?? "default"}:${options.maxDepth ?? "default"}:${options.candidateLimit ?? "default"}`;
+  const result = await cachedValue(
+    cacheKey,
+    TOKEN_FORENSICS_TTL_MS,
+    async () => {
+      enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.tokenForensics);
+      return withConcurrencyLimit(
+        HEAVY_ROUTE_POLICIES.tokenForensics.concurrencyLabel,
+        HEAVY_ROUTE_POLICIES.tokenForensics.maxConcurrency,
+        () => analyzeTokenForensics(mint, options),
+      );
+    },
+  );
+  sendJson(res, 200, result);
+}
+
 async function handleProxy(req, res, pathname, search) {
   const method = req.method ?? "GET";
   const normalizedPath = normalizePathname(pathname);
@@ -394,6 +604,56 @@ async function requestHandler(req, res) {
     if (traceMatch) {
       assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
       await handleTraceAnalysis(req, res, traceMatch[1], requestUrl.searchParams);
+      return;
+    }
+
+    const enhancedHistoryMatch = matchEnhancedCounterpartyHistory(pathname);
+    if (enhancedHistoryMatch) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleEnhancedCounterpartyHistory(
+        req,
+        res,
+        enhancedHistoryMatch[1],
+        enhancedHistoryMatch[2],
+        requestUrl.searchParams,
+      );
+      return;
+    }
+
+    const provenanceMatch = matchWalletTokenProvenance(pathname);
+    if (provenanceMatch) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleWalletTokenProvenance(
+        req,
+        res,
+        provenanceMatch[1],
+        provenanceMatch[2],
+        requestUrl.searchParams,
+      );
+      return;
+    }
+
+    const tokenHoldersMatch = matchTokenHolders(pathname);
+    if (tokenHoldersMatch) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleTokenHolderSnapshot(
+        req,
+        res,
+        tokenHoldersMatch[1],
+        requestUrl.searchParams,
+      );
+      return;
+    }
+
+    const tokenForensicsMatch = matchTokenForensics(pathname);
+    if (tokenForensicsMatch) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleTokenForensics(
+        req,
+        res,
+        tokenForensicsMatch[1],
+        requestUrl.searchParams,
+      );
       return;
     }
 

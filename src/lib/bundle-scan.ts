@@ -1,22 +1,9 @@
-import { PublicKey } from "@solana/web3.js";
-import { gtfaPage } from "@/api";
+import { gtfaPage, getTokenAccountAddressesByOwner } from "@/api";
 import type { TokenHolder } from "@/birdeye-api";
-
-// ---- ATA derivation ----
-
-const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-const TOKEN_2022_PROGRAM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
-const ASSOCIATED_TOKEN_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-
-function deriveAta(wallet: PublicKey, mint: PublicKey, tokenProgram: PublicKey): PublicKey {
-  const [ata] = PublicKey.findProgramAddressSync(
-    [wallet.toBytes(), tokenProgram.toBytes(), mint.toBytes()],
-    ASSOCIATED_TOKEN_PROGRAM,
-  );
-  return ata;
-}
-
-// ---- Types ----
+import {
+  computeOwnerMintDelta,
+  findFirstOwnerMintAcquisition,
+} from "@/lib/token-forensics";
 
 export interface BundleScanProgress {
   scanned: number;
@@ -26,16 +13,19 @@ export interface BundleScanProgress {
 
 export interface BundleGroup {
   slot: number;
-  members: string[];   // holder addresses
-  totalPct: number;    // combined % of bundle members
+  members: string[];
+  totalPct: number;
 }
 
 export interface BundleScanResult {
-  firstBuySlots: Map<string, number>;  // address → slot
-  bundles: BundleGroup[];              // groups with 2+ members
+  firstAcquisitionSlots: Map<string, number>;
+  bundles: BundleGroup[];
 }
 
-// ---- Concurrency helper ----
+const MAX_PAGES_PER_SOURCE = 25;
+const HOLDER_SCAN_CONCURRENCY = 10;
+const SOURCE_SCAN_CONCURRENCY = 3;
+const SLOT_WINDOW = 4;
 
 async function withConcurrency<T>(
   items: T[],
@@ -52,86 +42,97 @@ async function withConcurrency<T>(
   await Promise.all(workers);
 }
 
-// ---- Core logic ----
-
-/**
- * Find the first transaction slot where `wallet` interacted with `mint`.
- * Strategy: scan the ATA's transactions ascending — the first tx IS the first buy.
- * Falls back to wallet scan if ATA has no results (non-ATA token accounts).
- */
-export async function findFirstBuySlot(
-  wallet: string,
+async function findFirstAcquisitionInSource(
+  address: string,
+  owner: string,
   mint: string,
+  walletFallback: boolean,
 ): Promise<number | null> {
-  const walletPk = new PublicKey(wallet);
-  const mintPk = new PublicKey(mint);
+  let paginationToken: string | undefined;
 
-  // Try both token programs (SPL Token and Token-2022)
-  for (const tokenProgram of [TOKEN_PROGRAM, TOKEN_2022_PROGRAM]) {
-    const ata = deriveAta(walletPk, mintPk, tokenProgram);
-    const { txs } = await gtfaPage(ata.toBase58(), { sortOrder: "asc" });
-    if (txs.length > 0) {
-      return txs[0].slot;
-    }
-  }
+  for (let page = 0; page < MAX_PAGES_PER_SOURCE; page++) {
+    const { txs, nextToken } = await gtfaPage(address, {
+      sortOrder: "asc",
+      paginationToken,
+      tokenAccountsMode: walletFallback ? "balanceChanged" : "none",
+    });
 
-  // Fallback: scan wallet transactions (for non-ATA token accounts)
-  const { txs } = await gtfaPage(wallet, { sortOrder: "asc" });
-  for (const tx of txs) {
-    const balances = tx.meta?.postTokenBalances;
-    if (!balances) continue;
-    for (const bal of balances) {
-      if (bal.mint === mint) {
-        return tx.slot;
-      }
+    for (const tx of txs) {
+      if (!tx.meta || tx.meta.err) continue;
+      if (computeOwnerMintDelta(tx, owner, mint) <= 0n) continue;
+      return tx.slot;
     }
+
+    if (!nextToken) break;
+    paginationToken = nextToken;
   }
 
   return null;
 }
 
-/**
- * Scan top-N holders for their first buy slot and group bundles.
- */
+export async function findFirstAcquisitionSlot(
+  wallet: string,
+  mint: string,
+): Promise<number | null> {
+  const currentTokenAccounts = await getTokenAccountAddressesByOwner(wallet, mint).catch(
+    () => [],
+  );
+  const candidateSlots: number[] = [];
+
+  await withConcurrency(currentTokenAccounts, SOURCE_SCAN_CONCURRENCY, async (address) => {
+    const slot = await findFirstAcquisitionInSource(address, wallet, mint, false);
+    if (slot != null) candidateSlots.push(slot);
+  });
+
+  let paginationToken: string | undefined;
+  for (let page = 0; page < MAX_PAGES_PER_SOURCE; page++) {
+    const { txs, nextToken } = await gtfaPage(wallet, {
+      sortOrder: "asc",
+      paginationToken,
+      tokenAccountsMode: "balanceChanged",
+    });
+    const firstAcquisition = findFirstOwnerMintAcquisition(txs, wallet, mint);
+    if (firstAcquisition) {
+      candidateSlots.push(firstAcquisition.slot);
+      break;
+    }
+    if (!nextToken) break;
+    paginationToken = nextToken;
+  }
+
+  return candidateSlots.length > 0 ? Math.min(...candidateSlots) : null;
+}
+
 export async function scanBundles(
   mint: string,
   holders: TokenHolder[],
   topN = 100,
-  onProgress?: (p: BundleScanProgress) => void,
+  onProgress?: (progress: BundleScanProgress) => void,
 ): Promise<BundleScanResult> {
   const targets = holders.slice(0, topN);
-  const firstBuySlots = new Map<string, number>();
+  const firstAcquisitionSlots = new Map<string, number>();
   let scanned = 0;
 
-  await withConcurrency(targets, 10, async (holder) => {
+  await withConcurrency(targets, HOLDER_SCAN_CONCURRENCY, async (holder) => {
     try {
-      const slot = await findFirstBuySlot(holder.owner, mint);
-      if (slot != null) {
-        firstBuySlots.set(holder.owner, slot);
-      }
+      const slot = await findFirstAcquisitionSlot(holder.owner, mint);
+      if (slot != null) firstAcquisitionSlots.set(holder.owner, slot);
     } catch {
-      // skip on error
+      // Skip acquisition lookup failures and continue.
     }
-    scanned++;
+
+    scanned += 1;
     onProgress?.({
       scanned,
       total: targets.length,
-      bundleCount: countBundles(firstBuySlots),
+      bundleCount: countBundles(firstAcquisitionSlots),
     });
   });
 
-  const bundles = buildBundleGroups(firstBuySlots, holders);
-  return { firstBuySlots, bundles };
+  const bundles = buildBundleGroups(firstAcquisitionSlots, holders);
+  return { firstAcquisitionSlots, bundles };
 }
 
-// ---- Helpers ----
-
-const SLOT_WINDOW = 4;
-
-/**
- * Group holders whose first-buy slots are within SLOT_WINDOW of each other.
- * Sweep sorted entries — start a new group when gap > SLOT_WINDOW.
- */
 function groupBySlotWindow(
   slots: Map<string, number>,
 ): { slot: number; members: string[] }[] {
@@ -142,42 +143,38 @@ function groupBySlotWindow(
   let currentGroup = { slot: entries[0][1], members: [entries[0][0]] };
 
   for (let i = 1; i < entries.length; i++) {
-    const [addr, slot] = entries[i];
+    const [address, slot] = entries[i];
     if (slot - currentGroup.slot <= SLOT_WINDOW) {
-      currentGroup.members.push(addr);
+      currentGroup.members.push(address);
     } else {
       groups.push(currentGroup);
-      currentGroup = { slot, members: [addr] };
+      currentGroup = { slot, members: [address] };
     }
   }
+
   groups.push(currentGroup);
   return groups;
 }
 
 function countBundles(slots: Map<string, number>): number {
-  return groupBySlotWindow(slots).filter((g) => g.members.length >= 2).length;
+  return groupBySlotWindow(slots).filter((group) => group.members.length >= 2).length;
 }
 
 function buildBundleGroups(
   slots: Map<string, number>,
   holders: TokenHolder[],
 ): BundleGroup[] {
-  const raw = groupBySlotWindow(slots);
+  const pctMap = new Map(holders.map((holder) => [holder.owner, holder.percentage]));
 
-  // Build percentage lookup
-  const pctMap = new Map<string, number>();
-  for (const h of holders) {
-    pctMap.set(h.owner, h.percentage);
-  }
-
-  // Filter to groups with 2+ members, sort by member count desc
-  const groups: BundleGroup[] = [];
-  for (const { slot, members } of raw) {
-    if (members.length < 2) continue;
-    const totalPct = members.reduce((s, a) => s + (pctMap.get(a) ?? 0), 0);
-    groups.push({ slot, members, totalPct });
-  }
-
-  groups.sort((a, b) => b.members.length - a.members.length);
-  return groups;
+  return groupBySlotWindow(slots)
+    .filter((group) => group.members.length >= 2)
+    .map((group) => ({
+      slot: group.slot,
+      members: group.members,
+      totalPct: group.members.reduce(
+        (sum, address) => sum + (pctMap.get(address) ?? 0),
+        0,
+      ),
+    }))
+    .sort((a, b) => b.members.length - a.members.length);
 }

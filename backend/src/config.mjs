@@ -22,10 +22,11 @@ function buildHeliusRpcUrl() {
 }
 
 export const PORT = Number(process.env.PORT ?? 8080);
-export const HOST = "0.0.0.0";
+export const HOST = trimEnv("HOST") || "127.0.0.1";
 
 export const HELIUS_API_KEY = trimEnv("HELIUS_API_KEY");
 export const HELIUS_RPC_URL = buildHeliusRpcUrl();
+export const HELIUS_ENHANCED_API_ORIGIN = trimEnv("HELIUS_ENHANCED_API_ORIGIN") || "https://api-mainnet.helius-rpc.com";
 export const BIRDEYE_API_KEY = trimEnv("BIRDEYE_API_KEY");
 export const SESSION_COOKIE_NAME = trimEnv("SESSION_COOKIE_NAME") || "haradrim_sid";
 export const SESSION_SECRET = trimEnv("SESSION_SECRET") || randomBytes(32).toString("hex");
@@ -43,6 +44,16 @@ export const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS ?? 15_000);
 export const PROXY_TTL_MS = Number(process.env.PROXY_TTL_MS ?? 5 * 60 * 1000);
 export const WALLET_ANALYSIS_TTL_MS = Number(process.env.WALLET_ANALYSIS_TTL_MS ?? 5 * 60 * 1000);
 export const TRACE_ANALYSIS_TTL_MS = Number(process.env.TRACE_ANALYSIS_TTL_MS ?? 5 * 60 * 1000);
+export const ENHANCED_HISTORY_TTL_MS = Number(process.env.ENHANCED_HISTORY_TTL_MS ?? 10 * 60 * 1000);
+export const PROVENANCE_ANALYSIS_TTL_MS = Number(
+  process.env.PROVENANCE_ANALYSIS_TTL_MS ?? 10 * 60 * 1000,
+);
+export const TOKEN_SNAPSHOT_TTL_MS = Number(
+  process.env.TOKEN_SNAPSHOT_TTL_MS ?? 10 * 60 * 1000,
+);
+export const TOKEN_FORENSICS_TTL_MS = Number(
+  process.env.TOKEN_FORENSICS_TTL_MS ?? 15 * 60 * 1000,
+);
 
 export const GTFA_TOKEN_ACCOUNTS_MODE = "balanceChanged";
 export const GTFA_SIGNATURE_PAGE_LIMIT = 1000;
@@ -56,3 +67,13 @@ export const RATE_LIMIT_RETRIES = Number(process.env.RATE_LIMIT_RETRIES ?? 5);
 export const MAX_WALLET_ANALYSIS_CONCURRENCY = Number(process.env.MAX_WALLET_ANALYSIS_CONCURRENCY ?? 2);
 export const MAX_TRACE_ANALYSIS_CONCURRENCY = Number(process.env.MAX_TRACE_ANALYSIS_CONCURRENCY ?? 1);
 export const MAX_GTFA_RPC_CONCURRENCY = Number(process.env.MAX_GTFA_RPC_CONCURRENCY ?? 2);
+export const MAX_ENHANCED_HISTORY_CONCURRENCY = Number(process.env.MAX_ENHANCED_HISTORY_CONCURRENCY ?? 1);
+export const MAX_PROVENANCE_ANALYSIS_CONCURRENCY = Number(
+  process.env.MAX_PROVENANCE_ANALYSIS_CONCURRENCY ?? 1,
+);
+export const MAX_TOKEN_SNAPSHOT_CONCURRENCY = Number(
+  process.env.MAX_TOKEN_SNAPSHOT_CONCURRENCY ?? 2,
+);
+export const MAX_TOKEN_FORENSICS_CONCURRENCY = Number(
+  process.env.MAX_TOKEN_FORENSICS_CONCURRENCY ?? 1,
+);

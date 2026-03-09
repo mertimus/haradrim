@@ -3,6 +3,7 @@ import {
   getDomainKeysWithReverses,
   getAllDomains,
   reverseLookupBatch,
+  resolve,
 } from "@bonfida/spl-name-service";
 import { cached, cacheGet, cacheSet } from "@/lib/cache";
 import { HELIUS_GTFA_RPC_URL, HELIUS_RPC_URL, HELIUS_WALLET_API_BASE } from "@/lib/constants";
@@ -15,12 +16,67 @@ const TTL_FUNDING = 30 * 60 * 1000;   // 30 min
 const TTL_TOKEN_META = 60 * 60 * 1000; // 1 hour — token metadata is stable
 const TTL_SNS = 30 * 60 * 1000;       // 30 min
 const TTL_ACCOUNT_TYPE = 60 * 60 * 1000; // 1 hour
+const TTL_OWNER_MINT_TOKEN_ACCOUNTS = 15 * 60 * 1000; // 15 min
 
 const RPC_URL = HELIUS_RPC_URL;
 const GTFA_RPC_URL = HELIUS_GTFA_RPC_URL;
 const WALLET_API = HELIUS_WALLET_API_BASE;
+const SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
 const connection = new Connection(RPC_URL);
+const BASE58_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const PREFERRED_SOL_DOMAIN_NAMESPACE = "preferredSns";
+
+function isSolDomainInput(value: string): boolean {
+  return value.length > 4 && !/\s/.test(value) && value.toLowerCase().endsWith(".sol");
+}
+
+function normalizeSolDomain(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function preferredSolDomainCacheKey(address: string): string {
+  return `${PREFERRED_SOL_DOMAIN_NAMESPACE}:${address}`;
+}
+
+export function rememberPreferredSolDomain(address: string, domain: string): void {
+  const normalizedDomain = normalizeSolDomain(domain);
+  if (!isSolDomainInput(normalizedDomain)) return;
+  cacheSet(preferredSolDomainCacheKey(address), normalizedDomain);
+}
+
+export function getPreferredSolDomain(address: string): string | null {
+  return cacheGet<string>(preferredSolDomainCacheKey(address), TTL_SNS);
+}
+
+function applyPreferredSolDomain(address: string, identity: WalletIdentity | null): WalletIdentity | null {
+  const preferredDomain = getPreferredSolDomain(address);
+  if (!preferredDomain) return identity;
+
+  const tags = [
+    preferredDomain,
+    ...(identity?.tags ?? []).filter((tag) => tag !== preferredDomain),
+  ];
+
+  if (!identity) {
+    return {
+      address,
+      name: preferredDomain,
+      label: preferredDomain,
+      category: "SNS Domain",
+      tags,
+    };
+  }
+
+  return {
+    ...identity,
+    name: preferredDomain,
+    label: preferredDomain,
+    category: identity.category ?? "SNS Domain",
+    tags,
+  };
+}
 
 function withHeliusApiKey(url: string): string {
   return url;
@@ -596,6 +652,35 @@ export async function getSolDomains(address: string): Promise<string[]> {
   }
 }
 
+export async function resolveWalletInput(input: string): Promise<string> {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    throw new Error("Enter a wallet address or .sol domain");
+  }
+
+  if (BASE58_REGEX.test(trimmed)) {
+    try {
+      return new PublicKey(trimmed).toBase58();
+    } catch {
+      // fall through to domain handling or final validation error
+    }
+  }
+
+  if (isSolDomainInput(trimmed)) {
+    const normalized = trimmed.toLowerCase();
+    return cached("snsResolve", normalized, TTL_SNS, async () => {
+      try {
+        const resolved = await resolve(connection, normalized);
+        return resolved.toBase58();
+      } catch {
+        throw new Error("Unable to resolve .sol domain");
+      }
+    });
+  }
+
+  throw new Error("Invalid Solana address or .sol domain");
+}
+
 /**
  * Batch resolve SNS .sol domains for multiple addresses.
  * 1) Parallel getAllDomains for each address (1 getProgramAccounts each)
@@ -669,35 +754,73 @@ export async function getBatchSolDomains(
   return new Map(Object.entries(obj));
 }
 
-async function _getIdentity(
-  address: string,
-): Promise<WalletIdentity | null> {
-  const data = await fetchWithTimeout(withHeliusApiKey(`${WALLET_API}/${address}/identity`), {})
-    .then((r) => (r.ok ? r.json() : null))
-    .catch(() => null);
+interface RawWalletIdentityResponse {
+  address?: string;
+  name?: string;
+  category?: string;
+  tags?: string[];
+  domainNames?: string[];
+}
 
-  let domains: string[] = [];
-  if (!data?.name) {
-    domains = await getSolDomains(address).catch(() => []);
+function normalizeDomainList(domains: string[] | undefined): string[] {
+  if (!domains?.length) return [];
+
+  const deduped = new Set<string>();
+  for (const domain of domains) {
+    const normalized = normalizeSolDomain(domain);
+    if (!isSolDomainInput(normalized)) continue;
+    deduped.add(normalized);
   }
+  return [...deduped];
+}
 
-  const name = data?.name ?? (domains.length > 0 ? domains[0] : undefined);
-  const category =
-    data?.category ?? (domains.length > 0 ? "SNS Domain" : undefined);
+function buildWalletIdentity(
+  address: string,
+  data: RawWalletIdentityResponse | null,
+  fallbackDomains: string[] = [],
+): WalletIdentity | null {
+  const domains = normalizeDomainList([
+    ...(data?.domainNames ?? []),
+    ...fallbackDomains,
+  ]);
+  const primaryDomain = domains[0];
+  const label = primaryDomain ?? data?.name;
+  const name = data?.name ?? primaryDomain;
+  const tags = [
+    ...domains,
+    ...((data?.tags ?? []).filter((tag) => !domains.includes(normalizeSolDomain(tag)))),
+  ];
+  const category = data?.category ?? (domains.length > 0 ? "SNS Domain" : undefined);
 
-  if (!name && !data) return null;
+  if (!label && !name) return null;
 
   return {
     address,
     name,
-    label: name,
+    label: label ?? name,
     category,
-    tags: [...(data?.tags ?? []), ...domains],
+    tags,
   };
 }
 
+async function _getIdentity(
+  address: string,
+): Promise<WalletIdentity | null> {
+  const data = await fetchWithTimeout(withHeliusApiKey(`${WALLET_API}/${address}/identity`), {})
+    .then((r) => (r.ok ? r.json() as Promise<RawWalletIdentityResponse> : null))
+    .catch(() => null);
+
+  let fallbackDomains: string[] = [];
+  if (normalizeDomainList(data?.domainNames).length === 0) {
+    fallbackDomains = await getSolDomains(address).catch(() => []);
+  }
+
+  return buildWalletIdentity(address, data, fallbackDomains);
+}
+
 export function getIdentity(address: string): Promise<WalletIdentity | null> {
-  return cached("identity", address, TTL_IDENTITY, () => _getIdentity(address));
+  return cached("identity", address, TTL_IDENTITY, () => _getIdentity(address))
+    .then((identity) => applyPreferredSolDomain(address, identity));
 }
 
 async function _getBatchIdentity(
@@ -705,10 +828,11 @@ async function _getBatchIdentity(
 ): Promise<Record<string, WalletIdentity>> {
   const map: Record<string, WalletIdentity> = {};
   if (addresses.length === 0) return map;
+  const uniqueAddresses = [...new Set(addresses)].filter(Boolean);
 
   const chunks: string[][] = [];
-  for (let i = 0; i < addresses.length; i += 100) {
-    chunks.push(addresses.slice(i, i + 100));
+  for (let i = 0; i < uniqueAddresses.length; i += 100) {
+    chunks.push(uniqueAddresses.slice(i, i + 100));
   }
 
   const results = await mapWithConcurrency(
@@ -722,26 +846,41 @@ async function _getBatchIdentity(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ addresses: chunk }),
         });
-        if (!res.ok) return [] as WalletIdentity[];
+        if (!res.ok) return [] as RawWalletIdentityResponse[];
         const data = await res.json();
-        return Array.isArray(data) ? data : [];
+        return Array.isArray(data) ? data as RawWalletIdentityResponse[] : [];
       } catch {
-        return [] as WalletIdentity[];
+        return [] as RawWalletIdentityResponse[];
       }
     },
   );
 
   for (const batch of results) {
     for (const item of batch) {
-      if (item.address && item.name) {
-        map[item.address] = {
-          address: item.address,
-          name: item.name,
-          label: item.name,
-          category: item.category,
-        };
-      }
+      if (!item.address) continue;
+      const identity = buildWalletIdentity(item.address, item);
+      if (identity) map[item.address] = identity;
     }
+  }
+
+  const domainMap = await getBatchSolDomains(uniqueAddresses).catch(() => new Map<string, string>());
+  for (const address of uniqueAddresses) {
+    const domain = domainMap.get(address);
+    if (!domain) continue;
+
+    const existing = map[address];
+    const tags = [
+      domain,
+      ...((existing?.tags ?? []).filter((tag) => tag !== domain)),
+    ];
+
+    map[address] = {
+      address,
+      name: existing?.name ?? domain,
+      label: domain,
+      category: existing?.category ?? "SNS Domain",
+      tags,
+    };
   }
 
   return map;
@@ -750,9 +889,39 @@ async function _getBatchIdentity(
 export async function getBatchIdentity(
   addresses: string[],
 ): Promise<Map<string, WalletIdentity>> {
-  const key = addresses.slice().sort().join(",");
-  const obj = await cached("batchId", key, TTL_IDENTITY, () => _getBatchIdentity(addresses));
-  return new Map(Object.entries(obj));
+  const uniqueAddresses = [...new Set(addresses)].filter(Boolean);
+  const key = uniqueAddresses.slice().sort().join(",");
+  let obj = await cached("batchId", key, TTL_IDENTITY, () => _getBatchIdentity(uniqueAddresses));
+
+  const missingAddresses = uniqueAddresses.filter((address) => !obj[address]);
+  if (missingAddresses.length > 0) {
+    const recovered = await mapWithConcurrency(
+      missingAddresses,
+      MAX_METADATA_FETCH_CONCURRENCY,
+      async (address) => [address, await getIdentity(address)] as const,
+    );
+
+    let changed = false;
+    const next = { ...obj };
+    for (const [address, identity] of recovered) {
+      if (!identity) continue;
+      next[address] = identity;
+      changed = true;
+    }
+    if (changed) {
+      obj = next;
+      cacheSet(`batchId:${key}`, obj);
+    }
+  }
+
+  const map = new Map<string, WalletIdentity>();
+  for (const address of addresses) {
+    const identity = applyPreferredSolDomain(address, obj[address] ?? null);
+    if (identity) {
+      map.set(address, identity);
+    }
+  }
+  return map;
 }
 
 // ---- Token metadata via DAS getAssetBatch ----
@@ -1032,4 +1201,82 @@ async function _getFunding(
 
 export function getFunding(address: string): Promise<FundingSource | null> {
   return cached("funding", address, TTL_FUNDING, () => _getFunding(address));
+}
+
+async function fetchOwnerTokenAccountsForProgram(
+  owner: string,
+  mint: string,
+  programId: string,
+): Promise<string[]> {
+  const res = await fetchWithTimeout(RPC_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getTokenAccountsByOwner",
+      params: [
+        owner,
+        { programId },
+        { encoding: "jsonParsed", commitment: "confirmed" },
+      ],
+    }),
+  });
+  if (!res.ok) return [];
+  const json = await res.json();
+  if (json.error) return [];
+
+  const accounts: Array<{
+    pubkey?: string;
+    account?: {
+      data?: {
+        parsed?: {
+          info?: {
+            mint?: string;
+          };
+        };
+      };
+    };
+  }> = json.result?.value ?? [];
+
+  return accounts
+    .filter((account) => account.account?.data?.parsed?.info?.mint === mint)
+    .map((account) => account.pubkey ?? "")
+    .filter(Boolean);
+}
+
+async function _getTokenAccountAddressesByOwner(
+  owner: string,
+  mint: string,
+): Promise<string[]> {
+  try {
+    new PublicKey(owner);
+    new PublicKey(mint);
+  } catch {
+    return [];
+  }
+
+  const results = await Promise.allSettled([
+    fetchOwnerTokenAccountsForProgram(owner, mint, SPL_TOKEN_PROGRAM_ID),
+    fetchOwnerTokenAccountsForProgram(owner, mint, TOKEN_2022_PROGRAM_ID),
+  ]);
+
+  const addresses = new Set<string>();
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const address of result.value) addresses.add(address);
+  }
+  return [...addresses];
+}
+
+export function getTokenAccountAddressesByOwner(
+  owner: string,
+  mint: string,
+): Promise<string[]> {
+  return cached(
+    "ownerMintTokenAccounts",
+    `${owner}:${mint}`,
+    TTL_OWNER_MINT_TOKEN_ACCOUNTS,
+    () => _getTokenAccountAddressesByOwner(owner, mint),
+  );
 }
