@@ -22,7 +22,7 @@ function buildHeliusRpcUrl() {
 }
 
 export const PORT = Number(process.env.PORT ?? 8080);
-export const HOST = trimEnv("HOST") || "127.0.0.1";
+export const HOST = trimEnv("HOST") || "0.0.0.0";
 
 export const HELIUS_API_KEY = trimEnv("HELIUS_API_KEY");
 export const HELIUS_RPC_URL = buildHeliusRpcUrl();
