@@ -39,7 +39,6 @@ import {
 } from "@/lib/parse-transactions";
 import type {
   CounterpartyFlow,
-  ForceSimData,
   OverlayWallet,
   GraphOverrides,
   GraphFlowFilter,

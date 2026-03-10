@@ -1209,8 +1209,8 @@ export function buildMergedGraphData(
         fy: n.fy,
       })),
       simLinks: simLinks.map((l) => ({
-        source: typeof l.source === "string" ? l.source : l.source.id,
-        target: typeof l.target === "string" ? l.target : l.target.id,
+        source: typeof l.source === "string" ? l.source : typeof l.source === "object" ? (l.source as ForceNode).id : String(l.source),
+        target: typeof l.target === "string" ? l.target : typeof l.target === "object" ? (l.target as ForceNode).id : String(l.target),
         distance: l.distance,
       })),
     };
