@@ -27,6 +27,18 @@ import {
   type SimulationLinkDatum,
 } from "d3-force";
 
+export interface CounterpartyTokenTransfer {
+  mint: string;
+  decimals: number;
+  sent: number;
+  received: number;
+  net: number;
+  txCount: number;
+  symbol?: string;
+  name?: string;
+  logoUri?: string;
+}
+
 export interface CounterpartyFlow {
   address: string;
   txCount: number;
@@ -42,6 +54,7 @@ export interface CounterpartyFlow {
   tokenName?: string;
   tokenSymbol?: string;
   tokenLogoUri?: string;
+  tokenTransfers?: CounterpartyTokenTransfer[];
 }
 
 export type GraphFlowFilter = "all" | "inflow" | "outflow";
@@ -81,6 +94,14 @@ export interface ParseResult {
   historicalMints: string[];
 }
 
+interface MutableTokenFlow {
+  mint: string;
+  decimals: number;
+  sent: number;
+  received: number;
+  signatures: Set<string>;
+}
+
 interface MutableCounterpartyFlow {
   txCount: number;
   solSent: number;
@@ -88,6 +109,7 @@ interface MutableCounterpartyFlow {
   firstSeen: number;
   lastSeen: number;
   signatures: Set<string>;
+  tokenFlows: Map<string, MutableTokenFlow>;
 }
 
 interface MutableParsedTransaction {
@@ -135,6 +157,20 @@ function resolveKey(
   return typeof key === "string" ? key : key.pubkey;
 }
 
+function finalizeTokenFlows(tokenFlows: Map<string, MutableTokenFlow>): CounterpartyTokenTransfer[] | undefined {
+  if (tokenFlows.size === 0) return undefined;
+  return Array.from(tokenFlows.values())
+    .map((tf) => ({
+      mint: tf.mint,
+      decimals: tf.decimals,
+      sent: tf.sent,
+      received: tf.received,
+      net: tf.received - tf.sent,
+      txCount: tf.signatures.size,
+    }))
+    .sort((a, b) => (b.sent + b.received) - (a.sent + a.received));
+}
+
 function finalizeCounterparties(
   counterpartyMap: Map<string, {
     txCount: number;
@@ -142,6 +178,7 @@ function finalizeCounterparties(
     solReceived: number;
     firstSeen: number;
     lastSeen: number;
+    tokenTransfers?: CounterpartyTokenTransfer[];
   }>,
   sortBy: "txCount" | "volume" = "txCount",
 ): CounterpartyFlow[] {
@@ -191,6 +228,7 @@ function initMutableCounterpartyEntry(timestamp: number): MutableCounterpartyFlo
     firstSeen: timestamp,
     lastSeen: timestamp,
     signatures: new Set<string>(),
+    tokenFlows: new Map<string, MutableTokenFlow>(),
   };
 }
 
@@ -458,6 +496,18 @@ export function accumulateWalletParseResult(
     if (event.kind === "native") {
       if (event.direction === "outflow") entry.solSent += event.uiAmount;
       else entry.solReceived += event.uiAmount;
+    } else if (event.kind === "token" && event.mint) {
+      const tf = entry.tokenFlows.get(event.mint) ?? {
+        mint: event.mint,
+        decimals: event.decimals,
+        sent: 0,
+        received: 0,
+        signatures: new Set<string>(),
+      };
+      if (event.direction === "outflow") tf.sent += event.uiAmount;
+      else tf.received += event.uiAmount;
+      tf.signatures.add(event.signature);
+      entry.tokenFlows.set(event.mint, tf);
     }
     accumulator.counterparties.set(event.counterparty, entry);
 
@@ -488,6 +538,7 @@ export function finalizeWalletParseAccumulator(
           solReceived: entry.solReceived,
           firstSeen: entry.firstSeen,
           lastSeen: entry.lastSeen,
+          tokenTransfers: finalizeTokenFlows(entry.tokenFlows),
         },
       ]),
     ),

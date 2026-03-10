@@ -81,7 +81,7 @@ export function WalletProfile({
     .sort((a, b) => (b.usdValue ?? 0) - (a.usdValue ?? 0))
     .slice(0, 3);
 
-  const solDomains = identity?.tags?.filter((t) => t.endsWith(".sol")) ?? [];
+  const solDomains = (identity?.tags?.filter((t) => t.endsWith(".sol")) ?? []).slice(0, 5);
 
   return (
     <div className="relative border-t border-primary/40">

@@ -350,17 +350,36 @@ export function parseTraceTransferEvents(txs, walletAddress) {
   return events;
 }
 
+function finalizeTokenFlows(tokenFlows) {
+  if (!tokenFlows || tokenFlows.size === 0) return undefined;
+  return Array.from(tokenFlows.values())
+    .map((tf) => ({
+      mint: tf.mint,
+      decimals: tf.decimals,
+      sent: tf.sent,
+      received: tf.received,
+      net: tf.received - tf.sent,
+      txCount: tf.signatures.size,
+    }))
+    .sort((a, b) => (b.sent + b.received) - (a.sent + a.received));
+}
+
 function finalizeCounterparties(counterpartyMap) {
   return Array.from(counterpartyMap.entries())
-    .map(([address, data]) => ({
-      address,
-      txCount: data.txCount,
-      solSent: data.solSent,
-      solReceived: data.solReceived,
-      solNet: data.solReceived - data.solSent,
-      firstSeen: data.firstSeen,
-      lastSeen: data.lastSeen,
-    }))
+    .map(([address, data]) => {
+      const base = {
+        address,
+        txCount: data.txCount,
+        solSent: data.solSent,
+        solReceived: data.solReceived,
+        solNet: data.solReceived - data.solSent,
+        firstSeen: data.firstSeen,
+        lastSeen: data.lastSeen,
+      };
+      const tokenTransfers = finalizeTokenFlows(data.tokenFlows);
+      if (tokenTransfers) base.tokenTransfers = tokenTransfers;
+      return base;
+    })
     .sort((a, b) => b.txCount - a.txCount || (b.solSent + b.solReceived) - (a.solSent + a.solReceived));
 }
 
@@ -399,6 +418,7 @@ function parseTransactions(txs, walletAddress) {
       firstSeen: event.timestamp,
       lastSeen: event.timestamp,
       signatures: new Set(),
+      tokenFlows: new Map(),
     };
 
     entry.firstSeen = Math.min(entry.firstSeen, event.timestamp);
@@ -410,6 +430,18 @@ function parseTransactions(txs, walletAddress) {
     if (event.kind === "native") {
       if (event.direction === "outflow") entry.solSent += event.uiAmount;
       else entry.solReceived += event.uiAmount;
+    } else if (event.kind === "token" && event.mint) {
+      const tf = entry.tokenFlows.get(event.mint) ?? {
+        mint: event.mint,
+        decimals: event.decimals,
+        sent: 0,
+        received: 0,
+        signatures: new Set(),
+      };
+      if (event.direction === "outflow") tf.sent += event.uiAmount;
+      else tf.received += event.uiAmount;
+      tf.signatures.add(event.signature);
+      entry.tokenFlows.set(event.mint, tf);
     }
     counterparties.set(event.counterparty, entry);
 
@@ -458,6 +490,11 @@ async function enrichCounterparties(counterparties) {
     if (info?.type === "token" && info.mint) {
       mints.add(info.mint);
     }
+    if (cp.tokenTransfers) {
+      for (const tf of cp.tokenTransfers) {
+        mints.add(tf.mint);
+      }
+    }
   }
 
   const tokenMetaMap = mints.size > 0
@@ -469,7 +506,7 @@ async function enrichCounterparties(counterparties) {
       const identity = identityMap.get(cp.address);
       const accountType = accountTypeMap.get(cp.address);
       const tokenMeta = accountType?.mint ? tokenMetaMap.get(accountType.mint) : undefined;
-      return {
+      const enriched = {
         ...cp,
         label: identity?.label ?? identity?.name,
         category: identity?.category,
@@ -479,6 +516,14 @@ async function enrichCounterparties(counterparties) {
         tokenSymbol: tokenMeta?.symbol,
         tokenLogoUri: tokenMeta?.logoUri,
       };
+      if (enriched.tokenTransfers) {
+        enriched.tokenTransfers = enriched.tokenTransfers.map((tf) => {
+          const meta = tokenMetaMap.get(tf.mint);
+          if (!meta) return tf;
+          return { ...tf, symbol: meta.symbol, name: meta.name, logoUri: meta.logoUri };
+        });
+      }
+      return enriched;
     })
     .filter((cp) => {
       const label = (cp.label ?? "").toLowerCase();

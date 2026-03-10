@@ -1,15 +1,7 @@
 import { Skeleton } from "@/components/ui/skeleton";
-import type { GraphPreset } from "@/App";
+import type { GraphPreset, WalletInsight } from "@/lib/wallet-explorer";
 
-export interface WalletInsight {
-  id: string;
-  title: string;
-  value: string;
-  description: string;
-  accentColor: string;
-  address?: string;
-  preset?: GraphPreset;
-}
+export type { WalletInsight } from "@/lib/wallet-explorer";
 
 interface WalletInsightsStripProps {
   insights: WalletInsight[];

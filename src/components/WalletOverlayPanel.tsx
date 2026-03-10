@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import type { OverlayWallet } from "@/lib/parse-transactions";
 import type { WalletIdentity } from "@/api";
-import type { WalletStats, WalletFilter } from "@/App";
+import type { SharedFunder, WalletStats, WalletFilter } from "@/lib/wallet-explorer";
 
 const BASE58_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -30,12 +30,6 @@ function formatSol(value: number): string {
   if (value >= 1) return value.toFixed(2);
   if (value >= 0.01) return value.toFixed(3);
   return value.toFixed(4);
-}
-
-export interface SharedFunder {
-  overlayAddress: string;
-  funderAddress: string;
-  funderLabel?: string;
 }
 
 interface WalletOverlayPanelProps {

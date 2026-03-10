@@ -8,20 +8,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { CounterpartyFlow, GraphFlowFilter } from "@/lib/parse-transactions";
+import type { GraphFlowFilter } from "@/lib/parse-transactions";
+import type { CounterpartyDisplay } from "@/lib/wallet-explorer";
 import { sortCounterparties } from "@/lib/counterparty-sorting";
 
-export interface PerSourceStats {
-  txCount: number;
-  solSent: number;
-  solReceived: number;
-}
-
-export interface CounterpartyDisplay extends CounterpartyFlow {
-  walletColors?: string[];
-  connectionScore?: number;
-  sourceStats?: Map<string, PerSourceStats>;
-}
+export type { CounterpartyDisplay } from "@/lib/wallet-explorer";
 
 export interface TimeRange {
   start: number | null;

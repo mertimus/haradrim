@@ -69,10 +69,13 @@ function applyPreferredSolDomain(address: string, identity: WalletIdentity | nul
     };
   }
 
+  // Only use preferred domain as label if it's shorter than the existing one
+  // (avoids spam domains like "cashfortunememe.sol" overriding "toly.sol")
+  const usePreferred = !identity.label || preferredDomain.length <= identity.label.length;
   return {
     ...identity,
-    name: preferredDomain,
-    label: preferredDomain,
+    name: usePreferred ? preferredDomain : identity.name,
+    label: usePreferred ? preferredDomain : identity.label,
     category: identity.category ?? "SNS Domain",
     tags,
   };
@@ -783,9 +786,22 @@ function buildWalletIdentity(
     ...(data?.domainNames ?? []),
     ...fallbackDomains,
   ]);
-  const primaryDomain = domains[0];
-  const label = primaryDomain ?? data?.name;
-  const name = data?.name ?? primaryDomain;
+  // Pick shortest .sol domain as display name — short names (e.g. toly.sol) are more likely real
+  // Collect from all sources: domainNames, data.name, and data.tags
+  const allCandidates = [...domains];
+  if (data?.name?.endsWith(".sol")) {
+    const n = normalizeSolDomain(data.name);
+    if (!allCandidates.includes(n)) allCandidates.push(n);
+  }
+  for (const tag of data?.tags ?? []) {
+    const n = normalizeSolDomain(tag);
+    if (isSolDomainInput(n) && !allCandidates.includes(n)) allCandidates.push(n);
+  }
+  const shortestDomain = allCandidates.length > 0
+    ? allCandidates.reduce((shortest, d) => d.length < shortest.length ? d : shortest)
+    : undefined;
+  const label = shortestDomain ?? data?.name;
+  const name = shortestDomain ?? data?.name;
   const tags = [
     ...domains,
     ...((data?.tags ?? []).filter((tag) => !domains.includes(normalizeSolDomain(tag)))),

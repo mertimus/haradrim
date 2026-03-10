@@ -1,6 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WalletIdentity } from "@/api";
-import type { CounterpartyFlow } from "@/lib/parse-transactions";
+import type { CounterpartyFlow, CounterpartyTokenTransfer } from "@/lib/parse-transactions";
+
+export interface TokenMeta {
+  symbol?: string;
+  name?: string;
+  logoUri?: string;
+}
 
 interface WalletFlowViewProps {
   address: string;
@@ -9,14 +15,18 @@ interface WalletFlowViewProps {
   loading: boolean;
   selectedAddress: string | null;
   onSelectAddress: (address: string) => void;
+  tokenMetadata?: Map<string, TokenMeta>;
+  solBalance?: number | null;
 }
 
 type FlowSide = "outflow" | "inflow";
 type FlowSortKey = "tx" | "volume" | "net" | "date";
-const FLOW_ROW_HEIGHT = 78;
+const FLOW_ROW_HEIGHT = 96;
 const FLOW_ROW_GAP = 8;
 const FLOW_ROW_PITCH = FLOW_ROW_HEIGHT + FLOW_ROW_GAP;
 const FLOW_OVERSCAN = 4;
+const ALL_TOKENS = "__all__";
+const SOL_FILTER = "__sol__";
 
 function truncAddr(addr: string): string {
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
@@ -41,8 +51,31 @@ function formatSolCompact(sol: number): string {
   });
 }
 
+function formatTokenCompact(amount: number): string {
+  if (Math.abs(amount) < 0.01) return "<0.01";
+  if (Math.abs(amount) >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(amount) >= 10_000) return `${(amount / 1000).toFixed(1)}K`;
+  if (Math.abs(amount) >= 1000) return amount.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function getTokenLabel(mint: string, meta?: TokenMeta, tfMeta?: { symbol?: string; name?: string }): string {
+  return tfMeta?.symbol ?? tfMeta?.name ?? meta?.symbol ?? meta?.name ?? `${mint.slice(0, 4)}..${mint.slice(-3)}`;
+}
+
 function getSideAmount(cp: CounterpartyFlow, side: FlowSide): number {
   return side === "outflow" ? cp.solSent : cp.solReceived;
+}
+
+function getTokenSideAmount(tf: CounterpartyTokenTransfer, side: FlowSide): number {
+  return side === "outflow" ? tf.sent : tf.received;
+}
+
+function hasSideFlow(cp: CounterpartyFlow, side: FlowSide): boolean {
+  if (side === "outflow") {
+    return cp.solSent > 0 || (cp.tokenTransfers?.some((tf) => tf.sent > 0) ?? false);
+  }
+  return cp.solReceived > 0 || (cp.tokenTransfers?.some((tf) => tf.received > 0) ?? false);
 }
 
 function getDirectionalSortValue(
@@ -64,7 +97,7 @@ function sortFlowItems(
   return [...items].sort((a, b) => {
     const primary = getDirectionalSortValue(b, side, sortKey) - getDirectionalSortValue(a, side, sortKey);
     if (primary !== 0) return primary;
-    const secondary = (b.txCount - a.txCount);
+    const secondary = b.txCount - a.txCount;
     if (secondary !== 0) return secondary;
     return (b.solSent + b.solReceived) - (a.solSent + a.solReceived);
   });
@@ -79,6 +112,36 @@ function filterFlowItems(items: CounterpartyFlow[], query: string): Counterparty
       || (cp.tokenName?.toLowerCase().includes(q) ?? false)
       || (cp.tokenSymbol?.toLowerCase().includes(q) ?? false),
   );
+}
+
+function filterByToken(
+  items: CounterpartyFlow[],
+  side: FlowSide,
+  tokenMint: string,
+  minAmount: number,
+): CounterpartyFlow[] {
+  if (tokenMint === ALL_TOKENS && minAmount <= 0) return items;
+
+  if (tokenMint === ALL_TOKENS) {
+    // Min amount applies to SOL
+    return items.filter((cp) => getSideAmount(cp, side) >= minAmount);
+  }
+
+  if (tokenMint === SOL_FILTER) {
+    return items.filter((cp) => getSideAmount(cp, side) >= Math.max(minAmount, 0.001));
+  }
+
+  return items.filter((cp) => {
+    const tf = cp.tokenTransfers?.find((t) => t.mint === tokenMint);
+    if (!tf) return false;
+    return getTokenSideAmount(tf, side) >= (minAmount || 0.01);
+  });
+}
+
+interface AvailableToken {
+  mint: string;
+  label: string;
+  totalVolume: number;
 }
 
 function useViewportHeight<T extends HTMLElement>() {
@@ -98,25 +161,164 @@ function useViewportHeight<T extends HTMLElement>() {
   return { ref, height };
 }
 
+function TokenDropdown({
+  value,
+  onChange,
+  tokens,
+  active,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  tokens: AvailableToken[];
+  active: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const selectedLabel = value === ALL_TOKENS
+    ? "All tokens"
+    : value === SOL_FILTER
+      ? "SOL"
+      : tokens.find((t) => t.mint === value)?.label ?? "Unknown";
+
+  const select = useCallback((v: string) => {
+    onChange(v);
+    setOpen(false);
+  }, [onChange]);
+
+  return (
+    <div ref={ref} className="relative min-w-0 flex-1">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex h-6 w-full items-center justify-between gap-1 rounded border px-1.5 font-mono text-[9px] outline-none transition-colors"
+        style={{
+          borderColor: active ? "rgba(255, 184, 0, 0.4)" : "hsl(var(--border))",
+          background: active ? "rgba(255, 184, 0, 0.06)" : "rgba(var(--background), 0.7)",
+          color: active ? "#ffb800" : "hsl(var(--foreground))",
+        }}
+      >
+        <span className="truncate">{selectedLabel}</span>
+        <svg width="8" height="8" viewBox="0 0 8 8" className="shrink-0 opacity-50">
+          <path d="M1 3l3 3 3-3" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          className="absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-y-auto rounded border border-border bg-card shadow-lg shadow-black/40"
+          style={{ top: "100%" }}
+        >
+          <DropdownItem
+            label="All tokens"
+            selected={value === ALL_TOKENS}
+            onSelect={() => select(ALL_TOKENS)}
+          />
+          <DropdownItem
+            label="SOL"
+            mint={SOL_FILTER}
+            selected={value === SOL_FILTER}
+            onSelect={() => select(SOL_FILTER)}
+          />
+          {tokens.map((t) => (
+            <DropdownItem
+              key={t.mint}
+              label={t.label}
+              mint={t.mint}
+              selected={value === t.mint}
+              onSelect={() => select(t.mint)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DropdownItem({
+  label,
+  mint,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  mint?: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const showMint = mint && label !== mint && !mint.startsWith("__");
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex w-full items-center gap-1.5 px-2 py-1 text-left font-mono text-[9px] transition-colors hover:bg-primary/10"
+      style={{ color: selected ? "#00d4ff" : "hsl(var(--foreground))" }}
+    >
+      <span
+        className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+        style={{
+          background: selected ? "#00d4ff" : "transparent",
+          border: selected ? "none" : "1px solid rgba(255,255,255,0.15)",
+        }}
+      />
+      <span className="truncate">{label}</span>
+      {showMint && (
+        <span className="ml-auto shrink-0 text-[8px] text-muted-foreground/50">
+          {mint.slice(0, 4)}..{mint.slice(-4)}
+        </span>
+      )}
+    </button>
+  );
+}
+
 function FlowLane({
   counterparty,
   side,
   maxSideAmount,
   selected,
   onSelect,
+  tokenMetadata,
+  highlightToken,
 }: {
   counterparty: CounterpartyFlow;
   side: FlowSide;
   maxSideAmount: number;
   selected: boolean;
   onSelect: (address: string) => void;
+  tokenMetadata?: Map<string, TokenMeta>;
+  highlightToken?: string;
 }) {
-  const amount = getSideAmount(counterparty, side);
-  const pct = maxSideAmount > 0 ? amount / maxSideAmount : 0;
+  const solAmount = getSideAmount(counterparty, side);
+  const pct = maxSideAmount > 0 ? solAmount / maxSideAmount : 0;
   const barWidth = `${20 + pct * 80}%`;
   const color = side === "outflow" ? "#ff4d4d" : "#00ff88";
   const barGlow =
     side === "outflow" ? "rgba(255, 77, 77, 0.35)" : "rgba(0, 255, 136, 0.35)";
+
+  // Get top token transfers for this side, max 2
+  const sideTokens = useMemo(() => {
+    if (!counterparty.tokenTransfers?.length) return [];
+    const filtered = counterparty.tokenTransfers
+      .filter((tf) => getTokenSideAmount(tf, side) > 0)
+      .sort((a, b) => {
+        // If a token is highlighted, put it first
+        if (highlightToken && highlightToken !== ALL_TOKENS && highlightToken !== SOL_FILTER) {
+          if (a.mint === highlightToken) return -1;
+          if (b.mint === highlightToken) return 1;
+        }
+        return getTokenSideAmount(b, side) - getTokenSideAmount(a, side);
+      });
+    return filtered.slice(0, 2);
+  }, [counterparty.tokenTransfers, side, highlightToken]);
 
   const card = (
     <button
@@ -136,9 +338,28 @@ function FlowLane({
         {truncAddr(counterparty.address)}
       </div>
       <div className="mt-1 flex items-center justify-between gap-2 font-mono text-[8px]">
-        <span style={{ color }}>{formatSolCompact(amount)} SOL</span>
+        <span style={{ color }}>{formatSolCompact(solAmount)} SOL</span>
         <span className="text-muted-foreground">{counterparty.txCount.toLocaleString()} tx</span>
       </div>
+      {sideTokens.length > 0 && (
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 font-mono text-[7px]">
+          {sideTokens.map((tf) => {
+            const label = getTokenLabel(tf.mint, tokenMetadata?.get(tf.mint), tf);
+            const amount = getTokenSideAmount(tf, side);
+            const isHighlighted = highlightToken === tf.mint;
+            return (
+              <span
+                key={tf.mint}
+                style={{
+                  color: isHighlighted ? "#ffb800" : "rgba(148, 163, 184, 0.8)",
+                }}
+              >
+                {formatTokenCompact(amount)} {label}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </button>
   );
 
@@ -161,7 +382,7 @@ function FlowLane({
   return (
     <div
       style={{ height: FLOW_ROW_HEIGHT }}
-      className={`grid items-center gap-2 ${side === "outflow" ? "grid-cols-[170px_minmax(90px,1fr)]" : "grid-cols-[minmax(90px,1fr)_170px]"}`}
+      className={`grid items-center gap-2 ${side === "outflow" ? "grid-cols-[180px_minmax(80px,1fr)]" : "grid-cols-[minmax(80px,1fr)_180px]"}`}
     >
       {side === "outflow" ? (
         <>
@@ -189,6 +410,12 @@ function VirtualFlowColumn({
   onSearchChange,
   sortKey,
   onSortKeyChange,
+  tokenFilter,
+  onTokenFilterChange,
+  minAmount,
+  onMinAmountChange,
+  availableTokens,
+  tokenMetadata,
   hiddenMessage,
 }: {
   title: string;
@@ -201,6 +428,12 @@ function VirtualFlowColumn({
   onSearchChange: (value: string) => void;
   sortKey: FlowSortKey;
   onSortKeyChange: (sortKey: FlowSortKey) => void;
+  tokenFilter: string;
+  onTokenFilterChange: (value: string) => void;
+  minAmount: string;
+  onMinAmountChange: (value: string) => void;
+  availableTokens: AvailableToken[];
+  tokenMetadata?: Map<string, TokenMeta>;
   hiddenMessage?: string;
 }) {
   const { ref: scrollRef, height: viewportHeight } = useViewportHeight<HTMLDivElement>();
@@ -238,6 +471,8 @@ function VirtualFlowColumn({
     });
   }, [items, selectedAddress, viewportHeight, scrollRef]);
 
+  const hasTokenFilter = tokenFilter !== ALL_TOKENS;
+
   return (
     <div className="flex min-h-0 flex-col">
       <div className="flex items-center justify-between px-1 pb-2">
@@ -251,7 +486,9 @@ function VirtualFlowColumn({
           {total.toLocaleString()} total
         </div>
       </div>
-      <div className="mb-2 flex items-center gap-1 px-1">
+
+      {/* Row 1: Search + sort */}
+      <div className="mb-1.5 flex items-center gap-1 px-1">
         <input
           type="text"
           value={searchValue}
@@ -280,10 +517,32 @@ function VirtualFlowColumn({
         ))}
       </div>
 
+      {/* Row 2: Token filter + min amount */}
+      <div className="mb-2 flex items-center gap-1 px-1">
+        <TokenDropdown
+          value={tokenFilter}
+          onChange={onTokenFilterChange}
+          tokens={availableTokens}
+          active={hasTokenFilter}
+        />
+        <input
+          type="text"
+          inputMode="decimal"
+          value={minAmount}
+          onChange={(e) => onMinAmountChange(e.target.value)}
+          placeholder="Min amt"
+          className="h-6 w-16 rounded border border-border bg-background/70 px-1.5 font-mono text-[9px] text-foreground outline-none placeholder:text-muted-foreground/40 focus:border-primary/40"
+          style={{
+            border: minAmount ? "1px solid rgba(255, 184, 0, 0.4)" : undefined,
+            background: minAmount ? "rgba(255, 184, 0, 0.06)" : undefined,
+          }}
+        />
+      </div>
+
       {hiddenMessage ? (
         <EmptySide title={`${title} Hidden`} message={hiddenMessage} />
       ) : items.length === 0 ? (
-        <EmptySide title={title} message={`No ${title.toLowerCase()} SOL relationships in the current view.`} />
+        <EmptySide title={title} message={`No ${title.toLowerCase()} relationships matching filters.`} />
       ) : (
         <div
           ref={scrollRef}
@@ -302,6 +561,8 @@ function VirtualFlowColumn({
                   maxSideAmount={maxSideAmount}
                   selected={selectedAddress === cp.address}
                   onSelect={onSelectAddress}
+                  tokenMetadata={tokenMetadata}
+                  highlightToken={tokenFilter}
                 />
               </div>
             ))}
@@ -328,31 +589,95 @@ export function WalletFlowView({
   loading,
   selectedAddress,
   onSelectAddress,
+  tokenMetadata,
+  solBalance,
 }: WalletFlowViewProps) {
   const [inflowQuery, setInflowQuery] = useState("");
   const [outflowQuery, setOutflowQuery] = useState("");
   const [inflowSortKey, setInflowSortKey] = useState<FlowSortKey>("tx");
   const [outflowSortKey, setOutflowSortKey] = useState<FlowSortKey>("tx");
+  const [inflowTokenFilter, setInflowTokenFilter] = useState(ALL_TOKENS);
+  const [outflowTokenFilter, setOutflowTokenFilter] = useState(ALL_TOKENS);
+  const [inflowMinAmount, setInflowMinAmount] = useState("");
+  const [outflowMinAmount, setOutflowMinAmount] = useState("");
+
+  // Collect available tokens per side (only tokens with flow in that direction)
+  const { inflowTokens, outflowTokens } = useMemo(() => {
+    const inflowMap = new Map<string, { mint: string; totalVolume: number; symbol?: string; name?: string }>();
+    const outflowMap = new Map<string, { mint: string; totalVolume: number; symbol?: string; name?: string }>();
+    for (const cp of counterparties) {
+      if (!cp.tokenTransfers) continue;
+      for (const tf of cp.tokenTransfers) {
+        if (tf.received > 0) {
+          const existing = inflowMap.get(tf.mint);
+          if (existing) {
+            existing.totalVolume += tf.received;
+            existing.symbol = existing.symbol ?? tf.symbol;
+            existing.name = existing.name ?? tf.name;
+          } else {
+            inflowMap.set(tf.mint, { mint: tf.mint, totalVolume: tf.received, symbol: tf.symbol, name: tf.name });
+          }
+        }
+        if (tf.sent > 0) {
+          const existing = outflowMap.get(tf.mint);
+          if (existing) {
+            existing.totalVolume += tf.sent;
+            existing.symbol = existing.symbol ?? tf.symbol;
+            existing.name = existing.name ?? tf.name;
+          } else {
+            outflowMap.set(tf.mint, { mint: tf.mint, totalVolume: tf.sent, symbol: tf.symbol, name: tf.name });
+          }
+        }
+      }
+    }
+    const toList = (map: Map<string, { mint: string; totalVolume: number; symbol?: string; name?: string }>) =>
+      Array.from(map.values())
+        .sort((a, b) => b.totalVolume - a.totalVolume)
+        .map((t) => ({
+          mint: t.mint,
+          label: getTokenLabel(t.mint, tokenMetadata?.get(t.mint), t),
+          totalVolume: t.totalVolume,
+        }));
+    return { inflowTokens: toList(inflowMap), outflowTokens: toList(outflowMap) };
+  }, [counterparties, tokenMetadata]);
+
+  const inflowMinNum = Number(inflowMinAmount) || 0;
+  const outflowMinNum = Number(outflowMinAmount) || 0;
 
   const outflows = useMemo(
     () => sortFlowItems(
-      filterFlowItems(counterparties.filter((cp) => cp.solSent > 0), outflowQuery),
+      filterByToken(
+        filterFlowItems(
+          counterparties.filter((cp) => hasSideFlow(cp, "outflow")),
+          outflowQuery,
+        ),
+        "outflow",
+        outflowTokenFilter,
+        outflowMinNum,
+      ),
       "outflow",
       outflowSortKey,
     ),
-    [counterparties, outflowQuery, outflowSortKey],
+    [counterparties, outflowQuery, outflowSortKey, outflowTokenFilter, outflowMinNum],
   );
   const inflows = useMemo(
     () => sortFlowItems(
-      filterFlowItems(counterparties.filter((cp) => cp.solReceived > 0), inflowQuery),
+      filterByToken(
+        filterFlowItems(
+          counterparties.filter((cp) => hasSideFlow(cp, "inflow")),
+          inflowQuery,
+        ),
+        "inflow",
+        inflowTokenFilter,
+        inflowMinNum,
+      ),
       "inflow",
       inflowSortKey,
     ),
-    [counterparties, inflowQuery, inflowSortKey],
+    [counterparties, inflowQuery, inflowSortKey, inflowTokenFilter, inflowMinNum],
   );
 
   const walletLabel = describeWallet(address, identity);
-  const displayedRowCount = outflows.length + inflows.length;
 
   if (loading) {
     return (
@@ -387,6 +712,12 @@ export function WalletFlowView({
           onSearchChange={setInflowQuery}
           sortKey={inflowSortKey}
           onSortKeyChange={setInflowSortKey}
+          tokenFilter={inflowTokenFilter}
+          onTokenFilterChange={setInflowTokenFilter}
+          minAmount={inflowMinAmount}
+          onMinAmountChange={setInflowMinAmount}
+          availableTokens={inflowTokens}
+          tokenMetadata={tokenMetadata}
         />
 
         <div className="flex items-center justify-center">
@@ -394,20 +725,14 @@ export function WalletFlowView({
             <div className="font-mono text-[8px] uppercase tracking-[0.24em] text-primary/70">Wallet</div>
             <div className="mt-2 truncate font-mono text-[15px] font-bold text-primary">{walletLabel}</div>
             <div className="mt-1 font-mono text-[10px] text-muted-foreground">{truncAddr(address)}</div>
-            <div className="mt-4 grid grid-cols-2 gap-2 font-mono text-[8px] text-muted-foreground">
-              <div className="rounded border border-border bg-background/70 px-2 py-1">
-                <div className="uppercase tracking-[0.16em]">Rows</div>
-                <div className="mt-0.5 text-[10px] text-foreground">
-                  {displayedRowCount.toLocaleString()}
+            {solBalance != null && (
+              <div className="mt-4 rounded border border-border bg-background/70 px-3 py-1.5 font-mono text-[8px] text-muted-foreground">
+                <div className="uppercase tracking-[0.16em]">Balance</div>
+                <div className="mt-0.5 text-[11px] text-foreground">
+                  {solBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} SOL
                 </div>
               </div>
-              <div className="rounded border border-border bg-background/70 px-2 py-1">
-                <div className="uppercase tracking-[0.16em]">Shown</div>
-                <div className="mt-0.5 text-[10px] text-foreground">
-                  Both Sides
-                </div>
-              </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -422,6 +747,12 @@ export function WalletFlowView({
           onSearchChange={setOutflowQuery}
           sortKey={outflowSortKey}
           onSortKeyChange={setOutflowSortKey}
+          tokenFilter={outflowTokenFilter}
+          onTokenFilterChange={setOutflowTokenFilter}
+          minAmount={outflowMinAmount}
+          onMinAmountChange={setOutflowMinAmount}
+          availableTokens={outflowTokens}
+          tokenMetadata={tokenMetadata}
         />
       </div>
     </div>
