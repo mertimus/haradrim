@@ -11,8 +11,16 @@ import {
 import type { CounterpartyFlow, GraphFlowFilter } from "@/lib/parse-transactions";
 import { sortCounterparties } from "@/lib/counterparty-sorting";
 
+export interface PerSourceStats {
+  txCount: number;
+  solSent: number;
+  solReceived: number;
+}
+
 export interface CounterpartyDisplay extends CounterpartyFlow {
   walletColors?: string[];
+  connectionScore?: number;
+  sourceStats?: Map<string, PerSourceStats>;
 }
 
 export interface TimeRange {
@@ -21,7 +29,7 @@ export interface TimeRange {
 }
 
 type TimePreset = "all" | "7d" | "30d" | "90d" | "1y" | "custom";
-export type CounterpartySortKey = "tx" | "vol" | "net" | "last";
+export type CounterpartySortKey = "tx" | "vol" | "net" | "last" | "score";
 export type CounterpartySortDir = "asc" | "desc";
 
 interface CounterpartyTableProps {
@@ -77,6 +85,37 @@ function fmtDate(ts: number): string {
   });
 }
 
+function strengthBars(score: number | undefined): { filled: number; color: string } {
+  if (score == null || score <= 0) return { filled: 0, color: "#6b7280" };
+  if (score >= 6) return { filled: 3, color: "#ff2d2d" };
+  if (score >= 3.5) return { filled: 2, color: "#ffb800" };
+  return { filled: 1, color: "#6b7280" };
+}
+
+function StrengthCell({ score }: { score: number | undefined }) {
+  const bars = strengthBars(score);
+  return (
+    <TableCell className="text-center align-top">
+      {bars.filled > 0 ? (
+        <span className="inline-flex gap-px items-end" title={score != null ? `Score: ${score.toFixed(1)}` : undefined}>
+          {[1, 2, 3].map((level) => (
+            <span
+              key={level}
+              className="inline-block w-[3px] rounded-sm"
+              style={{
+                height: 4 + level * 2,
+                backgroundColor: level <= bars.filled ? bars.color : "rgba(107, 114, 128, 0.2)",
+              }}
+            />
+          ))}
+        </span>
+      ) : (
+        <span className="font-mono text-[8px] text-muted-foreground/30">-</span>
+      )}
+    </TableCell>
+  );
+}
+
 const TH =
   "font-mono text-[8px] uppercase tracking-wider text-muted-foreground";
 
@@ -122,6 +161,11 @@ export function CounterpartyTable({
   const [showSearch, setShowSearch] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const hasScores = useMemo(
+    () => counterparties.some((cp) => (cp as CounterpartyDisplay).connectionScore != null && (cp as CounterpartyDisplay).connectionScore! > 0),
+    [counterparties],
+  );
 
   // Time range filter state
   const [activePreset, setActivePreset] = useState<TimePreset>("all");
@@ -340,6 +384,9 @@ export function CounterpartyTable({
                 <>Counterparty<span className="ml-1 text-muted-foreground/30">&#x1F50D;</span></>
               )}
             </TableHead>
+            {hasScores && (
+              <TableHead className={`${TH} text-center cursor-pointer select-none hover:text-foreground transition-colors w-[40px]`} onClick={() => handleSort("score")} title="Connection strength">Str<SortIcon col="score" sortKey={sortKey} sortDir={sortDir} /></TableHead>
+            )}
             <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("tx")}>Tx<SortIcon col="tx" sortKey={sortKey} sortDir={sortDir} /></TableHead>
             <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("vol")} title="SOL volume">Vol SOL<SortIcon col="vol" sortKey={sortKey} sortDir={sortDir} /></TableHead>
             <TableHead className={`${TH} text-right cursor-pointer select-none hover:text-foreground transition-colors`} onClick={() => handleSort("net")} title="Net SOL flow">Net SOL<SortIcon col="net" sortKey={sortKey} sortDir={sortDir} /></TableHead>
@@ -424,6 +471,7 @@ export function CounterpartyTable({
                   )}
                 </div>
               </TableCell>
+              {hasScores && <StrengthCell score={cp.connectionScore} />}
               <TableCell className="text-right font-mono text-[10px] text-foreground tabular-nums align-top">
                 {cp.txCount}
               </TableCell>

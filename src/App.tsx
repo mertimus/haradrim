@@ -39,6 +39,7 @@ import {
 } from "@/lib/parse-transactions";
 import type {
   CounterpartyFlow,
+  ForceSimData,
   OverlayWallet,
   GraphOverrides,
   GraphFlowFilter,
@@ -47,7 +48,9 @@ import { sortCounterparties } from "@/lib/counterparty-sorting";
 import {
   getEnhancedCounterpartyHistory,
   getWalletAnalysis,
+  getWalletPairSignals,
 } from "@/lib/backend-api";
+import type { WalletPairSignalsResult } from "@/lib/backend-api";
 
 export interface WalletFilter {
   minVolume: number;
@@ -199,6 +202,20 @@ function sortCounterpartiesByTableOrder<T extends CounterpartyFlow>(
   });
 }
 
+function computeConnectionScore(
+  walletCount: number,
+  totalVolume: number,
+  totalTxCount: number,
+  multiWalletRecent: boolean,
+): number {
+  return (
+    walletCount * 2.0 +
+    Math.log(1 + totalVolume) * 0.3 +
+    Math.log(1 + totalTxCount) * 0.2 +
+    (multiWalletRecent ? 0.5 : 0)
+  );
+}
+
 function mergeDisplayCounterparties(
   filteredCounterparties: CounterpartyFlow[],
   filteredOverlayWallets: OverlayWallet[],
@@ -214,14 +231,23 @@ function mergeDisplayCounterparties(
   }
 
   const hubAddresses = new Set([address, ...readyOverlays.map((overlay) => overlay.address)]);
-  const merged = new Map<
-    string,
-    CounterpartyDisplay & { sourceIndices: number[] }
-  >();
+  const recentCutoff = Math.floor(Date.now() / 1000) - THIRTY_DAY_WINDOW_SECONDS;
+
+  interface MergedEntry extends CounterpartyDisplay {
+    sourceIndices: number[];
+    sourceStats: Map<string, { txCount: number; solSent: number; solReceived: number }>;
+  }
+
+  const merged = new Map<string, MergedEntry>();
 
   for (const cp of filteredCounterparties) {
     if (hubAddresses.has(cp.address)) continue;
-    merged.set(cp.address, { ...cp, sourceIndices: [0], walletColors: [] });
+    merged.set(cp.address, {
+      ...cp,
+      sourceIndices: [0],
+      walletColors: [],
+      sourceStats: new Map([[address, { txCount: cp.txCount, solSent: cp.solSent, solReceived: cp.solReceived }]]),
+    });
   }
 
   for (let i = 0; i < readyOverlays.length; i++) {
@@ -241,20 +267,29 @@ function mergeDisplayCounterparties(
         if (!existing.sourceIndices.includes(colorIdx)) {
           existing.sourceIndices.push(colorIdx);
         }
+        existing.sourceStats.set(overlay.address, { txCount: cp.txCount, solSent: cp.solSent, solReceived: cp.solReceived });
       } else {
         merged.set(cp.address, {
           ...cp,
           sourceIndices: [colorIdx],
           walletColors: [],
+          sourceStats: new Map([[overlay.address, { txCount: cp.txCount, solSent: cp.solSent, solReceived: cp.solReceived }]]),
         });
       }
     }
   }
 
-  return Array.from(merged.values()).map((cp) => ({
-    ...cp,
-    walletColors: cp.sourceIndices.map((index) => walletColors[index]),
-  }));
+  return Array.from(merged.values()).map((cp) => {
+    const walletCount = cp.sourceIndices.length;
+    const totalVolume = cp.solSent + cp.solReceived;
+    const multiWalletRecent = walletCount > 1 && cp.lastSeen >= recentCutoff;
+    return {
+      ...cp,
+      walletColors: cp.sourceIndices.map((index) => walletColors[index]),
+      connectionScore: computeConnectionScore(walletCount, totalVolume, cp.txCount, multiWalletRecent),
+      sourceStats: cp.sourceStats,
+    };
+  });
 }
 
 function getAddressFromUrl(): string {
@@ -367,6 +402,10 @@ export default function App() {
     timestamp?: number;
   }>>(new Map());
   const [detailIdentityByAddress, setDetailIdentityByAddress] = useState<Map<string, WalletIdentity | null>>(new Map());
+  const pendingIdentityAddressesRef = useRef<Set<string>>(new Set());
+  const [walletPairSignals, setWalletPairSignals] = useState<WalletPairSignalsResult[]>([]);
+  const walletPairSignalsRequestRef = useRef(0);
+  const hasAutoSortedRef = useRef(false);
   const searchDisplayValue = address ? (getPreferredSolDomain(address) ?? address) : "";
   const enrichedCounterparties = useMemo(
     () => applyCounterpartyIdentityOverrides(counterparties, detailIdentityByAddress),
@@ -712,7 +751,7 @@ export default function App() {
       return;
     }
 
-    // Multi-wallet mode
+    // Multi-wallet mode — use worker for force layout when 50+ nodes
     const wallets = [
       { address, counterparties: scopedGraphCounterparties, identity },
       ...readyOverlays.map((ow) => ({
@@ -721,15 +760,44 @@ export default function App() {
         identity: ow.identity,
       })),
     ];
+    const totalNodes = wallets.reduce((sum, w) => sum + w.counterparties.length, wallets.length);
+    const useWorker = totalNodes >= 50;
+
     const graphData = buildMergedGraphData(
       wallets,
       walletColors,
       graphOverrides,
       effectiveGraphNodeBudget,
       graphRankByAddress,
+      useWorker ? { skipSimulation: true } : undefined,
     );
     setNodes(graphData.nodes);
     setEdges(graphData.edges);
+
+    if (!useWorker || !graphData.forceSimData) return;
+
+    const worker = new Worker(
+      new URL("@/workers/force-layout.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    const simData = graphData.forceSimData;
+    worker.postMessage({ nodes: simData.simNodes, links: simData.simLinks });
+    worker.onmessage = (e: MessageEvent<{ positions: Record<string, { x: number; y: number }> }>) => {
+      const { positions } = e.data;
+      setNodes((prev) =>
+        prev.map((node) => {
+          const pos = positions[node.id];
+          return pos ? { ...node, position: pos } : node;
+        }),
+      );
+      worker.terminate();
+    };
+    worker.onerror = () => {
+      worker.terminate();
+    };
+    return () => {
+      worker.terminate();
+    };
   }, [
     address,
     rankedGraphCounterparties,
@@ -772,6 +840,68 @@ export default function App() {
     ),
     [comparisonWallets],
   );
+
+  const sharedFunders = useMemo(() => {
+    const readyOverlays = overlayWallets.filter((ow) => !ow.loading && !ow.error);
+    if (readyOverlays.length === 0 || !funding) return [];
+    const primaryFunder = funding.address;
+    return readyOverlays
+      .filter((ow) => ow.funding?.address === primaryFunder)
+      .map((ow) => ({
+        overlayAddress: ow.address,
+        funderAddress: primaryFunder,
+        funderLabel: funding.label ?? ow.funding?.label,
+      }));
+  }, [funding, overlayWallets]);
+
+  // Phase 6: Auto-suggested comparisons (only when no overlays)
+  const suggestedComparisons = useMemo(() => {
+    if (overlayWallets.length > 0) return [];
+    const suggestions: { address: string; reason: string }[] = [];
+    const seen = new Set<string>();
+    seen.add(address);
+
+    // Suggestion 1: The wallet's funder
+    if (funding?.address && !seen.has(funding.address)) {
+      suggestions.push({
+        address: funding.address,
+        reason: `Funder${funding.label ? ` (${funding.label})` : ""}`,
+      });
+      seen.add(funding.address);
+    }
+
+    // Suggestion 2: Largest bidirectional counterparty (single-pass max)
+    let topMutual: CounterpartyFlow | null = null;
+    let topMutualVol = -1;
+    let topFrequency: CounterpartyFlow | null = null;
+    let topFrequencyTx = -1;
+    for (const cp of filteredCounterparties) {
+      if (seen.has(cp.address) || cp.accountType === "program" || cp.accountType === "token") continue;
+      if (cp.solSent > 0 && cp.solReceived > 0) {
+        const vol = cp.solSent + cp.solReceived;
+        if (vol > topMutualVol) { topMutual = cp; topMutualVol = vol; }
+      }
+      if (cp.txCount > topFrequencyTx) { topFrequency = cp; topFrequencyTx = cp.txCount; }
+    }
+    if (topMutual) {
+      suggestions.push({
+        address: topMutual.address,
+        reason: `Top mutual${topMutual.label ? ` (${topMutual.label})` : ""}`,
+      });
+      seen.add(topMutual.address);
+    }
+
+    // Suggestion 3: Most frequent counterparty
+    if (topFrequency && !seen.has(topFrequency.address)) {
+      suggestions.push({
+        address: topFrequency.address,
+        reason: `Most active (${topFrequency.txCount} tx)`,
+      });
+      seen.add(topFrequency.address);
+    }
+
+    return suggestions;
+  }, [address, filteredCounterparties, funding, overlayWallets.length]);
 
   const strongestSharedCounterparty = useMemo(
     () => mergedCounterparties
@@ -836,32 +966,41 @@ export default function App() {
             accentColor: "#00ff88",
             preset: "inflows",
           },
-      sharedComparisonCount > 0 && strongestSharedCounterparty
+      sharedFunders.length > 0
         ? {
-            id: "mutual-overlap",
-            title: "Mutual Overlap",
-            value: `${sharedComparisonCount.toLocaleString()} shared`,
-            description: `Strongest overlap: ${describeCounterparty(strongestSharedCounterparty)}`,
-            accentColor: "#00d4ff",
-            address: strongestSharedCounterparty.address,
-            preset: "mutuals",
+            id: "shared-funder",
+            title: "Shared Funder",
+            value: sharedFunders[0].funderLabel ?? truncAddr(sharedFunders[0].funderAddress),
+            description: `${sharedFunders.length + 1} wallets funded by same source`,
+            accentColor: "#ff2d2d",
+            address: sharedFunders[0].funderAddress,
           }
-        : byOldest
+        : sharedComparisonCount > 0 && strongestSharedCounterparty
           ? {
-              id: "oldest-relationship",
-              title: "Oldest Relationship",
-              value: describeCounterparty(byOldest),
-              description: `Active since ${formatDateCompact(byOldest.firstSeen)}`,
-              accentColor: "#ffb800",
-              address: byOldest.address,
+              id: "mutual-overlap",
+              title: "Mutual Overlap",
+              value: `${sharedComparisonCount.toLocaleString()} shared`,
+              description: `Strongest overlap: ${describeCounterparty(strongestSharedCounterparty)}`,
+              accentColor: "#00d4ff",
+              address: strongestSharedCounterparty.address,
+              preset: "mutuals",
             }
-          : {
-              id: "oldest-relationship",
-              title: "Oldest Relationship",
-              value: "No history yet",
-              description: "The current view has no dated counterparties.",
-              accentColor: "#ffb800",
-            },
+          : byOldest
+            ? {
+                id: "oldest-relationship",
+                title: "Oldest Relationship",
+                value: describeCounterparty(byOldest),
+                description: `Active since ${formatDateCompact(byOldest.firstSeen)}`,
+                accentColor: "#ffb800",
+                address: byOldest.address,
+              }
+            : {
+                id: "oldest-relationship",
+                title: "Oldest Relationship",
+                value: "No history yet",
+                description: "The current view has no dated counterparties.",
+                accentColor: "#ffb800",
+              },
       byNewest
         ? {
             id: "newest-counterparty",
@@ -881,7 +1020,7 @@ export default function App() {
             preset: "new30d",
           },
     ];
-  }, [enrichedAllTimeCounterparties, filteredCounterparties, sharedComparisonCount, strongestSharedCounterparty]);
+  }, [enrichedAllTimeCounterparties, filteredCounterparties, sharedComparisonCount, sharedFunders, strongestSharedCounterparty]);
 
   useEffect(() => {
     if (!selectedCounterpartyAddress) return;
@@ -942,6 +1081,8 @@ export default function App() {
       firstSeen: cp.firstSeen,
       lastSeen: cp.lastSeen,
       connectedWallets,
+      sourceStats: cp.sourceStats,
+      connectionScore: cp.connectionScore,
     };
   }, [comparisonWallets, detailIdentityByAddress, mergedCounterparties, selectedCounterpartyAddress]);
 
@@ -980,16 +1121,42 @@ export default function App() {
     : selectedCounterpartyDetail;
   const currentTableCounterparties = sortedMergedCounterparties;
 
+  // Look up forensic signals for the selected counterparty (merge across all pairs, keep highest score per kind)
+  const selectedForensicData = useMemo(() => {
+    if (walletPairSignals.length === 0 || !selectedCounterpartyAddress) return null;
+    const bestByKind = new Map<string, import("@/lib/backend-api").WalletPairSignal>();
+    for (const pairResult of walletPairSignals) {
+      const match = pairResult.signals.find((s) => s.counterparty === selectedCounterpartyAddress);
+      if (match) {
+        for (const sig of match.signals) {
+          const existing = bestByKind.get(sig.kind);
+          if (!existing || sig.score > existing.score) {
+            bestByKind.set(sig.kind, sig);
+          }
+        }
+      }
+    }
+    if (bestByKind.size === 0) return null;
+    const allSignals = [...bestByKind.values()];
+    const totalScore = allSignals.reduce((sum, s) => sum + s.score, 0);
+    return { signals: allSignals, totalScore };
+  }, [walletPairSignals, selectedCounterpartyAddress]);
+
   useEffect(() => {
     const addressesToPrefetch = [
       ...rankedGraphCounterparties.slice(0, effectiveGraphNodeBudget),
       ...currentTableCounterparties.slice(0, 150),
     ]
-      .filter((cp) => !detailIdentityByAddress.has(cp.address))
+      .filter((cp) => !detailIdentityByAddress.has(cp.address) && !pendingIdentityAddressesRef.current.has(cp.address))
       .map((cp) => cp.address);
 
     const uniqueAddresses = [...new Set(addressesToPrefetch)];
     if (uniqueAddresses.length === 0) return;
+
+    // Mark as pending before the async call fires
+    for (const addr of uniqueAddresses) {
+      pendingIdentityAddressesRef.current.add(addr);
+    }
 
     let cancelled = false;
     void getBatchIdentity(uniqueAddresses)
@@ -1018,10 +1185,18 @@ export default function App() {
           }
           return changed ? next : prev;
         });
+      })
+      .finally(() => {
+        for (const addr of uniqueAddresses) {
+          pendingIdentityAddressesRef.current.delete(addr);
+        }
       });
 
     return () => {
       cancelled = true;
+      for (const addr of uniqueAddresses) {
+        pendingIdentityAddressesRef.current.delete(addr);
+      }
     };
   }, [
     currentTableCounterparties,
@@ -1029,6 +1204,28 @@ export default function App() {
     effectiveGraphNodeBudget,
     rankedGraphCounterparties,
   ]);
+
+  // Fetch wallet-pair forensic signals for all overlay pairs
+  useEffect(() => {
+    const readyOverlays = overlayWallets.filter((ow) => !ow.loading && !ow.error);
+    if (readyOverlays.length === 0 || !address) {
+      setWalletPairSignals([]);
+      return;
+    }
+
+    const rid = ++walletPairSignalsRequestRef.current;
+
+    void Promise.all(
+      readyOverlays.map((ow) => getWalletPairSignals(address, ow.address).catch(() => null)),
+    ).then((results) => {
+      if (rid !== walletPairSignalsRequestRef.current) return;
+      setWalletPairSignals(results.filter((r): r is WalletPairSignalsResult => r != null));
+    });
+
+    return () => {
+      walletPairSignalsRequestRef.current++;
+    };
+  }, [address, overlayWallets]);
 
   const flowTransferHistory = useMemo<FlowTransferHistoryItem[]>(() => {
     if (!selectedCounterpartyAddress) return [];
@@ -1230,6 +1427,10 @@ export default function App() {
     allTimeTxsRef.current = [];
     allTimeCounterpartiesRef.current = [];
     allTimeLastBlockTimeRef.current = 0;
+    pendingIdentityAddressesRef.current = new Set();
+    setWalletPairSignals([]);
+    walletPairSignalsRequestRef.current++;
+    hasAutoSortedRef.current = false;
   }, []);
 
   const lookup = useCallback(async (addr: string) => {
@@ -1365,17 +1566,26 @@ export default function App() {
         const ident: WalletIdentity | null = existingCp?.label
           ? { address: overlayAddr, name: existingCp.label, label: existingCp.label, category: existingCp.category }
           : null;
-        const analysis = await getWalletAnalysis(overlayAddr);
+        const [analysis, overlayFunding] = await Promise.all([
+          getWalletAnalysis(overlayAddr),
+          getFunding(overlayAddr).catch(() => null),
+        ]);
         if (lookupRequestIdRef.current !== walletGeneration) return;
         if (overlayRequestIdsRef.current.get(overlayAddr) !== requestId) return;
 
         setOverlayWallets((prev) =>
           prev.map((ow) =>
             ow.address === overlayAddr
-              ? { ...ow, identity: ident, counterparties: analysis.counterparties, loading: false, error: undefined }
+              ? { ...ow, identity: ident, counterparties: analysis.counterparties, funding: overlayFunding, loading: false, error: undefined }
               : ow,
           ),
         );
+        // Auto-sort by connection score only when the first overlay loads
+        if (!hasAutoSortedRef.current) {
+          hasAutoSortedRef.current = true;
+          setTableSortKey("score");
+          setTableSortDir("desc");
+        }
       } catch (err) {
         if (lookupRequestIdRef.current !== walletGeneration) return;
         if (overlayRequestIdsRef.current.get(overlayAddr) !== requestId) return;
@@ -1663,6 +1873,8 @@ export default function App() {
                           onAddOverlay={handleAddOverlay}
                           surface="graph"
                           highlightCompareAction={!hasOverlayComparison}
+                          forensicSignals={selectedForensicData?.signals}
+                          forensicScore={selectedForensicData?.totalScore}
                         />
                       </div>
                       <div className="flex-1 min-h-0 overflow-hidden">
@@ -1703,6 +1915,8 @@ export default function App() {
                         walletFilters={walletFilters}
                         walletStats={walletStats}
                         onWalletFilterChange={handleWalletFilterChange}
+                        sharedFunders={sharedFunders}
+                        suggestedComparisons={suggestedComparisons}
                       />
                     </div>
                   )}

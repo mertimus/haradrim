@@ -11,6 +11,8 @@ function getSortValue<T extends CounterpartyFlow>(cp: T, key: CounterpartySortKe
       return cp.solNet;
     case "last":
       return cp.lastSeen;
+    case "score":
+      return (cp as T & { connectionScore?: number }).connectionScore ?? 0;
   }
 }
 

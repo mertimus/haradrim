@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -7,6 +7,12 @@ export interface DetailWalletConnection {
   label: string;
   color: string;
   role: "Primary" | "Overlay";
+}
+
+export interface PerWalletStats {
+  txCount: number;
+  solSent: number;
+  solReceived: number;
 }
 
 export interface SelectedCounterpartyDetail {
@@ -23,6 +29,14 @@ export interface SelectedCounterpartyDetail {
   firstSeen: number;
   lastSeen: number;
   connectedWallets: DetailWalletConnection[];
+  sourceStats?: Map<string, PerWalletStats>;
+  connectionScore?: number;
+}
+
+export interface ForensicSignalDisplay {
+  kind: string;
+  score: number;
+  summary: string;
 }
 
 interface CounterpartyDetailPanelProps {
@@ -35,6 +49,8 @@ interface CounterpartyDetailPanelProps {
   onAddOverlay: (address: string) => void;
   surface?: "graph" | "flow";
   highlightCompareAction?: boolean;
+  forensicSignals?: ForensicSignalDisplay[];
+  forensicScore?: number;
 }
 
 function truncAddr(addr: string): string {
@@ -75,7 +91,16 @@ function accountTypeLabel(detail: SelectedCounterpartyDetail): string | null {
   return null;
 }
 
-const DETAIL_RECENT_CUTOFF = Math.floor(Date.now() / 1000) - 30 * 86400;
+const SIGNAL_COLORS: Record<string, string> = {
+  shared_fee_payer: "#ff2d2d",
+  shared_signer: "#ff6b35",
+  synchronized_timing: "#ffb800",
+  shared_funding_ancestor: "#a855f7",
+};
+
+function signalLabel(kind: string): string {
+  return kind.replace(/_/g, " ").replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
 
 export function CounterpartyDetailPanel({
   detail,
@@ -87,11 +112,17 @@ export function CounterpartyDetailPanel({
   onAddOverlay,
   surface = "graph",
   highlightCompareAction = false,
+  forensicSignals = [],
+  forensicScore,
 }: CounterpartyDetailPanelProps) {
   const detailAddress = detail?.address ?? "";
   const typeLabel = detail ? accountTypeLabel(detail) : null;
   const inGraph = detail ? graphAddresses.has(detail.address) : false;
-  const recentCutoff = DETAIL_RECENT_CUTOFF;
+  const recentCutoff = useMemo(
+    () => Math.floor(Date.now() / 1000) - 30 * 86400,
+    // Re-evaluate every minute
+    [Math.floor(Date.now() / 60000)],
+  );
   const showGraphActions = surface === "graph";
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
@@ -208,14 +239,56 @@ export function CounterpartyDetailPanel({
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
           <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-muted-foreground">Tx</div>
           <div className="mt-0.5 font-mono text-[11px] font-bold text-foreground">{detail.txCount.toLocaleString()}</div>
+          {detail.sourceStats && detail.sourceStats.size > 1 && (
+            <div className="mt-0.5 space-y-px">
+              {detail.connectedWallets.map((w) => {
+                const s = detail.sourceStats?.get(w.address);
+                if (!s) return null;
+                return (
+                  <div key={w.address} className="flex items-center gap-1 font-mono text-[7px] text-muted-foreground">
+                    <span className="h-1 w-1 rounded-full flex-none" style={{ backgroundColor: w.color }} />
+                    {s.txCount}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
           <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Sent SOL</div>
           <div className="mt-0.5 font-mono text-[11px] font-bold text-destructive">{fmtSol(detail.solSent)}</div>
+          {detail.sourceStats && detail.sourceStats.size > 1 && (
+            <div className="mt-0.5 space-y-px">
+              {detail.connectedWallets.map((w) => {
+                const s = detail.sourceStats?.get(w.address);
+                if (!s) return null;
+                return (
+                  <div key={w.address} className="flex items-center gap-1 font-mono text-[7px] text-muted-foreground">
+                    <span className="h-1 w-1 rounded-full flex-none" style={{ backgroundColor: w.color }} />
+                    {fmtSol(s.solSent)}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
           <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Recv SOL</div>
           <div className="mt-0.5 font-mono text-[11px] font-bold text-[#00ff88]">{fmtSol(detail.solReceived)}</div>
+          {detail.sourceStats && detail.sourceStats.size > 1 && (
+            <div className="mt-0.5 space-y-px">
+              {detail.connectedWallets.map((w) => {
+                const s = detail.sourceStats?.get(w.address);
+                if (!s) return null;
+                return (
+                  <div key={w.address} className="flex items-center gap-1 font-mono text-[7px] text-muted-foreground">
+                    <span className="h-1 w-1 rounded-full flex-none" style={{ backgroundColor: w.color }} />
+                    {fmtSol(s.solReceived)}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
           <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Net SOL</div>
@@ -250,6 +323,37 @@ export function CounterpartyDetailPanel({
           </div>
         </div>
       </div>
+
+      {forensicSignals.length > 0 && (
+        <div className="mt-1.5">
+          <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-muted-foreground mb-1">
+            Connection Evidence
+            {forensicScore != null && (
+              <span className="ml-1.5 text-primary">{forensicScore.toFixed(1)}</span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {forensicSignals.map((signal) => {
+              const color = SIGNAL_COLORS[signal.kind] ?? "#6b7280";
+              return (
+                <span
+                  key={signal.kind}
+                  className="inline-flex items-center gap-1 rounded border px-1 py-0.5 font-mono text-[7px]"
+                  style={{
+                    borderColor: `${color}40`,
+                    backgroundColor: `${color}10`,
+                    color,
+                  }}
+                  title={signal.summary}
+                >
+                  {signalLabel(signal.kind)}
+                  <span className="opacity-60">{signal.score.toFixed(1)}</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="mt-1.5 flex flex-wrap gap-1">
         <button

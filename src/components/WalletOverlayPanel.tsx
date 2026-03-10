@@ -32,6 +32,12 @@ function formatSol(value: number): string {
   return value.toFixed(4);
 }
 
+export interface SharedFunder {
+  overlayAddress: string;
+  funderAddress: string;
+  funderLabel?: string;
+}
+
 interface WalletOverlayPanelProps {
   primaryAddress: string;
   primaryIdentity: WalletIdentity | null;
@@ -44,6 +50,8 @@ interface WalletOverlayPanelProps {
   walletFilters: Map<number, WalletFilter>;
   walletStats: WalletStats[];
   onWalletFilterChange: (walletIndex: number, filter: WalletFilter) => void;
+  sharedFunders?: SharedFunder[];
+  suggestedComparisons?: { address: string; reason: string }[];
 }
 
 function ColorDot({
@@ -245,6 +253,8 @@ export function WalletOverlayPanel({
   walletFilters,
   walletStats,
   onWalletFilterChange,
+  sharedFunders = [],
+  suggestedComparisons = [],
 }: WalletOverlayPanelProps) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
@@ -272,9 +282,29 @@ export function WalletOverlayPanel({
         Compared Wallets
       </div>
 
-      {overlayWallets.length === 0 && (
+      {overlayWallets.length === 0 && suggestedComparisons.length === 0 && (
         <div className="rounded border border-primary/15 bg-primary/5 px-2 py-1 font-mono text-[8px] leading-relaxed text-muted-foreground">
           Select a node or row, then use <span className="text-primary">Add to Compare</span> to reveal shared counterparties.
+        </div>
+      )}
+
+      {overlayWallets.length === 0 && suggestedComparisons.length > 0 && (
+        <div className="space-y-0.5">
+          <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-muted-foreground/60">
+            Suggested
+          </div>
+          {suggestedComparisons.map((s) => (
+            <div key={s.address} className="flex items-center gap-1.5 px-1 py-0.5 rounded bg-card/50">
+              <span className="font-mono text-[10px] text-foreground">{truncAddr(s.address)}</span>
+              <span className="font-mono text-[8px] text-muted-foreground truncate flex-1 min-w-0">{s.reason}</span>
+              <button
+                onClick={() => onAdd(s.address)}
+                className="font-mono text-[8px] text-primary hover:text-primary/80 transition-colors flex-none px-1 py-0.5 rounded border border-primary/20 hover:border-primary/40"
+              >
+                Compare
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
@@ -376,6 +406,21 @@ export function WalletOverlayPanel({
           </div>
         );
       })}
+
+      {/* Shared funder badge */}
+      {sharedFunders.length > 0 && (
+        <div className="rounded border border-destructive/20 bg-destructive/5 px-2 py-1">
+          <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-destructive/80">
+            Shared Funder Detected
+          </div>
+          <div className="mt-0.5 font-mono text-[9px] text-foreground">
+            {sharedFunders[0].funderLabel ?? truncAddr(sharedFunders[0].funderAddress)}
+          </div>
+          <div className="mt-0.5 font-mono text-[7px] text-muted-foreground">
+            {sharedFunders.length + 1} wallets share the same funding source
+          </div>
+        </div>
+      )}
 
       {/* Add overlay input */}
       {!disabled && (

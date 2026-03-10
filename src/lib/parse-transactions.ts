@@ -1,4 +1,4 @@
-import type { RpcParsedInstruction, RpcTransaction, WalletIdentity } from "@/api";
+import type { FundingSource, RpcParsedInstruction, RpcTransaction, WalletIdentity } from "@/api";
 import { LAMPORTS_PER_SOL } from "@/lib/constants";
 import {
   aggregateTraceCounterparties,
@@ -114,6 +114,7 @@ export interface OverlayWallet {
   counterparties: CounterpartyFlow[];
   loading: boolean;
   error?: string;
+  funding?: FundingSource | null;
 }
 
 export const DEFAULT_WALLET_COLORS = ["#00d4ff", "#ff6b35", "#a855f7", "#ffb800", "#00ff88", "#ff4da6", "#ffd700", "#8b5cf6"];
@@ -896,6 +897,24 @@ export function countSharedCounterparties(
   return sharedCount;
 }
 
+export interface ForceSimData {
+  simNodes: Array<{
+    id: string;
+    isCenter: boolean;
+    importance: number;
+    nodeSize: number;
+    hubX?: number;
+    hubY?: number;
+    fx?: number | null;
+    fy?: number | null;
+  }>;
+  simLinks: Array<{
+    source: string;
+    target: string;
+    distance: number;
+  }>;
+}
+
 export function buildMergedGraphData(
   wallets: Array<{
     address: string;
@@ -906,7 +925,8 @@ export function buildMergedGraphData(
   overrides?: GraphOverrides,
   nodeBudget = 50,
   rankByAddress?: Map<string, number>,
-): { nodes: Node[]; edges: Edge[] } {
+  options?: { skipSimulation?: boolean },
+): { nodes: Node[]; edges: Edge[]; forceSimData?: ForceSimData } {
   if (wallets.length === 0) return { nodes: [], edges: [] };
   if (wallets.length === 1) {
     return buildGraphData(wallets[0].address, wallets[0].counterparties, wallets[0].identity, overrides, nodeBudget);
@@ -1172,36 +1192,63 @@ export function buildMergedGraphData(
     });
   }
 
-  // Run simulation
-  const sim = forceSimulation<ForceNode>(simNodes)
-    .force(
-      "link",
-      forceLink<ForceNode, ForceLink>(simLinks)
-        .id((d) => d.id)
-        .distance((d) => d.distance)
-        .strength(1.2),
-    )
-    .force("charge", forceManyBody<ForceNode>().strength(-180))
-    .force("center", forceCenter(0, 0).strength(0.1))
-    .force(
-      "collide",
-      forceCollide<ForceNode>().radius((d) => d.nodeSize * 0.55 + 15).strength(0.8),
-    )
-    .force(
-      "hubX",
-      forceX<ForceNode>((d) => d.hubX ?? 0).strength((d) => (d.isCenter ? 0 : 0.4)),
-    )
-    .force(
-      "hubY",
-      forceY<ForceNode>((d) => d.hubY ?? 0).strength((d) => (d.isCenter ? 0 : 0.4)),
-    )
-    .stop();
-
-  for (let i = 0; i < 400; i++) sim.tick();
-
   const posMap = new Map<string, { x: number; y: number }>();
-  for (const sn of simNodes) {
-    posMap.set(sn.id, { x: sn.x ?? 0, y: sn.y ?? 0 });
+  let forceSimData: ForceSimData | undefined;
+
+  if (options?.skipSimulation) {
+    // Serialize sim data for worker
+    forceSimData = {
+      simNodes: simNodes.map((n) => ({
+        id: n.id,
+        isCenter: n.isCenter,
+        importance: n.importance,
+        nodeSize: n.nodeSize,
+        hubX: n.hubX,
+        hubY: n.hubY,
+        fx: n.fx,
+        fy: n.fy,
+      })),
+      simLinks: simLinks.map((l) => ({
+        source: typeof l.source === "string" ? l.source : l.source.id,
+        target: typeof l.target === "string" ? l.target : l.target.id,
+        distance: l.distance,
+      })),
+    };
+    // Use hub/initial positions as placeholders
+    for (const sn of simNodes) {
+      posMap.set(sn.id, { x: sn.fx ?? sn.hubX ?? 0, y: sn.fy ?? sn.hubY ?? 0 });
+    }
+  } else {
+    // Run simulation synchronously (fallback)
+    const sim = forceSimulation<ForceNode>(simNodes)
+      .force(
+        "link",
+        forceLink<ForceNode, ForceLink>(simLinks)
+          .id((d) => d.id)
+          .distance((d) => d.distance)
+          .strength(1.2),
+      )
+      .force("charge", forceManyBody<ForceNode>().strength(-180))
+      .force("center", forceCenter(0, 0).strength(0.1))
+      .force(
+        "collide",
+        forceCollide<ForceNode>().radius((d) => d.nodeSize * 0.55 + 15).strength(0.8),
+      )
+      .force(
+        "hubX",
+        forceX<ForceNode>((d) => d.hubX ?? 0).strength((d) => (d.isCenter ? 0 : 0.4)),
+      )
+      .force(
+        "hubY",
+        forceY<ForceNode>((d) => d.hubY ?? 0).strength((d) => (d.isCenter ? 0 : 0.4)),
+      )
+      .stop();
+
+    for (let i = 0; i < 400; i++) sim.tick();
+
+    for (const sn of simNodes) {
+      posMap.set(sn.id, { x: sn.x ?? 0, y: sn.y ?? 0 });
+    }
   }
 
   // Build React Flow nodes
@@ -1307,5 +1354,5 @@ export function buildMergedGraphData(
     });
   }
 
-  return { nodes, edges };
+  return { nodes, edges, forceSimData };
 }

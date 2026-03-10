@@ -252,6 +252,39 @@ export function getTokenHolderSnapshot(
   );
 }
 
+export interface WalletPairSignal {
+  kind: string;
+  score: number;
+  summary: string;
+  detail?: string[];
+}
+
+export interface WalletPairCounterpartySignals {
+  counterparty: string;
+  label?: string;
+  totalScore: number;
+  dominantSignal: string;
+  signals: WalletPairSignal[];
+}
+
+export interface WalletPairSignalsResult {
+  walletA: string;
+  walletB: string;
+  sharedCounterpartyCount: number;
+  signalCount: number;
+  sharedFunder: { address: string; label?: string } | null;
+  signals: WalletPairCounterpartySignals[];
+}
+
+export function getWalletPairSignals(
+  addrA: string,
+  addrB: string,
+): Promise<WalletPairSignalsResult> {
+  return fetchJson<WalletPairSignalsResult>(
+    `/wallets/${addrA}/compare/${addrB}/signals`,
+  );
+}
+
 export function getTokenForensics(
   mint: string,
   options?: { scopeLimit?: number; maxDepth?: number; candidateLimit?: number },

@@ -29,6 +29,7 @@ import { analyzeTrace, analyzeWallet } from "./analysis-core.mjs";
 import { analyzeWalletMintProvenance } from "./provenance-core.mjs";
 import { buildTokenHolderSnapshot } from "./token-snapshot-core.mjs";
 import { analyzeTokenForensics } from "./token-forensics-core.mjs";
+import { analyzeWalletPairSignals } from "./wallet-pair-signals.mjs";
 import { buildWalletApiUrl, fetchWithTimeout, parseEnhancedTransactions } from "./providers.mjs";
 
 const ALLOWED_RPC_METHODS = new Map([
@@ -131,6 +132,10 @@ function matchTokenHolders(pathname) {
 
 function matchTokenForensics(pathname) {
   return pathname.match(/^\/tokens\/([A-Za-z0-9]+)\/forensics$/);
+}
+
+function matchWalletPairSignals(pathname) {
+  return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/compare\/([A-Za-z0-9]+)\/signals$/);
 }
 
 const GENERIC_HELIUS_SOURCES = new Set([
@@ -498,6 +503,28 @@ async function handleTokenForensics(req, res, mint, searchParams) {
   sendJson(res, 200, result);
 }
 
+const WALLET_PAIR_SIGNALS_TTL_MS = 5 * 60 * 1000; // 5 min cache
+
+async function handleWalletPairSignals(req, res, addrA, addrB) {
+  const cacheKey = `wallet-pair-signals:${[addrA, addrB].sort().join(":")}`;
+  const cached = getCachedValue(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  const pending = getInflightValue(cacheKey);
+  if (pending) {
+    sendJson(res, 200, await pending);
+    return;
+  }
+
+  const result = await cachedValue(cacheKey, WALLET_PAIR_SIGNALS_TTL_MS, () =>
+    analyzeWalletPairSignals(addrA, addrB),
+  );
+  sendJson(res, 200, result);
+}
+
 async function handleProxy(req, res, pathname, search) {
   const method = req.method ?? "GET";
   const normalizedPath = normalizePathname(pathname);
@@ -654,6 +681,13 @@ async function requestHandler(req, res) {
         tokenForensicsMatch[1],
         requestUrl.searchParams,
       );
+      return;
+    }
+
+    const walletPairSignalsMatch = matchWalletPairSignals(pathname);
+    if (walletPairSignalsMatch) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleWalletPairSignals(req, res, walletPairSignalsMatch[1], walletPairSignalsMatch[2]);
       return;
     }
 
