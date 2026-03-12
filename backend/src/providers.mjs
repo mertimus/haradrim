@@ -586,6 +586,76 @@ async function fetchOwnerTokenAccountsForProgram(owner, mint, programId) {
     .filter(Boolean);
 }
 
+async function fetchOwnerTokenBalancesForProgram(owner, programId) {
+  const json = await rpcJson("getTokenAccountsByOwner", [
+    owner,
+    { programId },
+    { encoding: "jsonParsed", commitment: "confirmed" },
+  ]);
+
+  const accounts = Array.isArray(json?.result?.value) ? json.result.value : [];
+  const balances = new Map();
+
+  for (const account of accounts) {
+    const info = account?.account?.data?.parsed?.info;
+    const mint = typeof info?.mint === "string" ? info.mint : "";
+    const tokenAmount = info?.tokenAmount;
+    const amount = typeof tokenAmount?.amount === "string" ? tokenAmount.amount : "";
+    const decimals = Number(tokenAmount?.decimals ?? 0);
+    if (!mint || !amount || !Number.isFinite(decimals)) continue;
+
+    let rawAmount;
+    try {
+      rawAmount = BigInt(amount);
+    } catch {
+      continue;
+    }
+
+    if (rawAmount === 0n) continue;
+
+    const existing = balances.get(mint) ?? {
+      rawAmount: 0n,
+      decimals,
+    };
+
+    existing.rawAmount += rawAmount;
+    if (!Number.isFinite(existing.decimals) || existing.decimals === 0) {
+      existing.decimals = decimals;
+    }
+    balances.set(mint, existing);
+  }
+
+  return balances;
+}
+
+export async function getCurrentTokenBalancesByOwner(owner) {
+  const cacheKey = `ownerTokenBalances:${owner}`;
+  return cachedValue(cacheKey, OWNER_MINT_TOKEN_ACCOUNTS_TTL_MS, async () => {
+    const results = await Promise.allSettled([
+      fetchOwnerTokenBalancesForProgram(owner, TOKEN_PROGRAM),
+      fetchOwnerTokenBalancesForProgram(owner, TOKEN_2022_PROGRAM),
+    ]);
+
+    const balances = new Map();
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      for (const [mint, next] of result.value.entries()) {
+        const current = balances.get(mint) ?? {
+          rawAmount: 0n,
+          decimals: next.decimals,
+        };
+        current.rawAmount += next.rawAmount;
+        if (!Number.isFinite(current.decimals) || current.decimals === 0) {
+          current.decimals = next.decimals;
+        }
+        balances.set(mint, current);
+      }
+    }
+
+    return balances;
+  });
+}
+
 export async function getTokenAccountAddressesByOwner(owner, mint) {
   const cacheKey = `ownerMintTokenAccounts:${owner}:${mint}`;
   return cachedValue(cacheKey, OWNER_MINT_TOKEN_ACCOUNTS_TTL_MS, async () => {

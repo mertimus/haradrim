@@ -112,7 +112,7 @@ function rememberTokenAccountInfo(map, account, next) {
   });
 }
 
-function buildTokenAccountInfo(tx) {
+export function buildTokenAccountInfo(tx) {
   const infoMap = new Map();
   const accountKeys = (tx.transaction?.message?.accountKeys ?? []).map(resolveKey);
 

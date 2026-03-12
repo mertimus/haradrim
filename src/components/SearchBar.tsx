@@ -1,8 +1,13 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { rememberPreferredSolDomain, resolveWalletInput } from "@/api";
 import { Input } from "@/components/ui/input";
 
 const SOL_DOMAIN_REGEX = /^[^\s]+\.sol$/i;
+let walletInputApiPromise: Promise<typeof import("@/api")> | null = null;
+
+function loadWalletInputApi() {
+  walletInputApiPromise ??= import("@/api");
+  return walletInputApiPromise;
+}
 
 interface SearchBarProps {
   onSearch: (address: string) => void | Promise<void>;
@@ -60,7 +65,8 @@ export function SearchBar({
           : { status: "loading", query }
       ));
 
-      void resolveWalletInput(query)
+      void loadWalletInputApi()
+        .then(({ resolveWalletInput }) => resolveWalletInput(query))
         .then((address) => {
           if (cancelled) return;
           setPreviewState({ status: "resolved", query, address });
@@ -114,11 +120,12 @@ export function SearchBar({
     const listener = (event: KeyboardEvent) => handleShortcut(event);
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, [enableShortcut, handleShortcut]);
+  }, [enableShortcut]);
 
   async function submitResolvedInput(resolved: string, rawInput: string) {
     setError("");
     if (SOL_DOMAIN_REGEX.test(rawInput.trim())) {
+      const { rememberPreferredSolDomain } = await loadWalletInputApi();
       rememberPreferredSolDomain(resolved, rawInput);
     }
     setResolving(true);
@@ -139,6 +146,7 @@ export function SearchBar({
         return;
       }
 
+      const { resolveWalletInput } = await loadWalletInputApi();
       const resolved = await resolveWalletInput(value);
       await submitResolvedInput(resolved, value);
     } catch (err) {

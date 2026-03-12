@@ -44,6 +44,7 @@ export const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS ?? 15_000);
 export const PROXY_TTL_MS = Number(process.env.PROXY_TTL_MS ?? 5 * 60 * 1000);
 export const WALLET_ANALYSIS_TTL_MS = Number(process.env.WALLET_ANALYSIS_TTL_MS ?? 5 * 60 * 1000);
 export const TRACE_ANALYSIS_TTL_MS = Number(process.env.TRACE_ANALYSIS_TTL_MS ?? 5 * 60 * 1000);
+export const BALANCE_HISTORY_TTL_MS = Number(process.env.BALANCE_HISTORY_TTL_MS ?? 5 * 60 * 1000);
 export const ENHANCED_HISTORY_TTL_MS = Number(process.env.ENHANCED_HISTORY_TTL_MS ?? 10 * 60 * 1000);
 export const PROVENANCE_ANALYSIS_TTL_MS = Number(
   process.env.PROVENANCE_ANALYSIS_TTL_MS ?? 10 * 60 * 1000,
@@ -66,6 +67,13 @@ export const MAX_METADATA_FETCH_CONCURRENCY = Number(process.env.MAX_METADATA_FE
 export const RATE_LIMIT_RETRIES = Number(process.env.RATE_LIMIT_RETRIES ?? 5);
 export const MAX_WALLET_ANALYSIS_CONCURRENCY = Number(process.env.MAX_WALLET_ANALYSIS_CONCURRENCY ?? 2);
 export const MAX_TRACE_ANALYSIS_CONCURRENCY = Number(process.env.MAX_TRACE_ANALYSIS_CONCURRENCY ?? 1);
+export const MAX_BALANCE_HISTORY_CONCURRENCY = Number(process.env.MAX_BALANCE_HISTORY_CONCURRENCY ?? 2);
+export const MAX_BALANCE_HISTORY_LEGACY_CONCURRENCY = Number(
+  process.env.MAX_BALANCE_HISTORY_LEGACY_CONCURRENCY ?? 1,
+);
+export const MAX_BALANCE_HISTORY_LEGACY_RPC_CONCURRENCY = Number(
+  process.env.MAX_BALANCE_HISTORY_LEGACY_RPC_CONCURRENCY ?? 32,
+);
 export const MAX_GTFA_RPC_CONCURRENCY = Number(process.env.MAX_GTFA_RPC_CONCURRENCY ?? 2);
 export const MAX_ENHANCED_HISTORY_CONCURRENCY = Number(process.env.MAX_ENHANCED_HISTORY_CONCURRENCY ?? 1);
 export const MAX_PROVENANCE_ANALYSIS_CONCURRENCY = Number(
@@ -76,4 +84,13 @@ export const MAX_TOKEN_SNAPSHOT_CONCURRENCY = Number(
 );
 export const MAX_TOKEN_FORENSICS_CONCURRENCY = Number(
   process.env.MAX_TOKEN_FORENSICS_CONCURRENCY ?? 1,
+);
+export const DIALECT_API_KEY = trimEnv("DIALECT_API_KEY");
+export const DIALECT_API_BASE = trimEnv("DIALECT_API_BASE") || "https://markets.dial.to/api";
+
+export const STABLECOIN_DASHBOARD_TTL_MS = Number(
+  process.env.STABLECOIN_DASHBOARD_TTL_MS ?? 5 * 60 * 1000,
+);
+export const MAX_STABLECOIN_DASHBOARD_CONCURRENCY = Number(
+  process.env.MAX_STABLECOIN_DASHBOARD_CONCURRENCY ?? 1,
 );

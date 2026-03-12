@@ -12,6 +12,72 @@ export interface WalletAnalysisResult {
   lastBlockTime: number;
 }
 
+export interface SolBalanceHistoryPoint {
+  signature: string;
+  slot: number;
+  timestamp: number;
+  balanceSol: number;
+  deltaSol: number;
+}
+
+export interface WalletSolBalanceHistoryResult {
+  address: string;
+  firstTimestamp: number | null;
+  lastTimestamp: number | null;
+  txCount: number;
+  estimatedTxCount: number;
+  currentBalanceSol: number;
+  startingBalanceSol: number;
+  netChangeSol: number;
+  minBalanceSol: number;
+  maxBalanceSol: number;
+  downsampled: boolean;
+  strategy: "empty" | "two-sided-direct" | "two-sided-gap-fill" | "legacy-gsfa-get-transaction";
+  points: SolBalanceHistoryPoint[];
+}
+
+export interface AssetBalanceHistoryPoint {
+  signature: string;
+  slot: number;
+  timestamp: number;
+  balance: number;
+  delta: number;
+}
+
+export interface WalletAssetBalanceHistory {
+  assetId: string;
+  kind: "native" | "token";
+  mint: string | null;
+  symbol?: string;
+  name?: string;
+  logoUri?: string;
+  decimals: number;
+  pointCount: number;
+  firstTimestamp: number | null;
+  lastTimestamp: number | null;
+  currentBalance: number;
+  startingBalance: number;
+  netChange: number;
+  minBalance: number;
+  maxBalance: number;
+  currentlyHeld: boolean;
+  downsampled: boolean;
+  points: AssetBalanceHistoryPoint[];
+}
+
+export interface WalletAssetBalanceHistoryResult {
+  address: string;
+  strategy: "gtfa-wallet-assets";
+  firstTimestamp: number | null;
+  lastTimestamp: number | null;
+  txCount: number;
+  estimatedTxCount: number;
+  assetCount: number;
+  currentAssetCount: number;
+  historicalAssetCount: number;
+  assets: WalletAssetBalanceHistory[];
+}
+
 export interface EnhancedHistoryAnnotation {
   signature: string;
   type?: string;
@@ -188,14 +254,55 @@ function buildQuery(range?: { start?: number | null; end?: number | null }): str
   return query ? `?${query}` : "";
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`);
-  const text = await res.text();
-  const payload = text ? JSON.parse(text) : null;
-  if (!res.ok) {
-    throw new Error(payload?.message ?? payload?.error ?? `Request failed (${res.status})`);
+interface FetchJsonOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+function createAbortSignal(options: FetchJsonOptions = {}): {
+  signal: AbortSignal;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const timeoutId = window.setTimeout(() => {
+    controller.abort(new DOMException("Request timed out", "AbortError"));
+  }, timeoutMs);
+
+  const externalSignal = options.signal;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      abortFromExternal();
+    } else {
+      externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+    }
   }
-  return payload as T;
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      window.clearTimeout(timeoutId);
+      externalSignal?.removeEventListener("abort", abortFromExternal);
+    },
+  };
+}
+
+async function fetchJson<T>(path: string, options?: FetchJsonOptions): Promise<T> {
+  const { signal, cleanup } = createAbortSignal(options);
+
+  try {
+    const res = await fetch(`${API_BASE_URL}${path}`, { signal });
+    const text = await res.text();
+    const payload = text ? JSON.parse(text) : null;
+    if (!res.ok) {
+      throw new Error(payload?.message ?? payload?.error ?? `Request failed (${res.status})`);
+    }
+    return payload as T;
+  } finally {
+    cleanup();
+  }
 }
 
 export function getWalletAnalysis(
@@ -213,6 +320,36 @@ export function getTraceAnalysis(
 ): Promise<TraceNodeFlows> {
   return fetchJson<TraceNodeFlows>(
     `/traces/${address}/flows${buildQuery(range)}`,
+  );
+}
+
+export function getWalletSolBalanceHistory(
+  address: string,
+  options?: FetchJsonOptions,
+): Promise<WalletSolBalanceHistoryResult> {
+  return fetchJson<WalletSolBalanceHistoryResult>(
+    `/wallets/${address}/balances/sol-history`,
+    options,
+  );
+}
+
+export function getWalletAssetBalanceHistory(
+  address: string,
+  options?: FetchJsonOptions,
+): Promise<WalletAssetBalanceHistoryResult> {
+  return fetchJson<WalletAssetBalanceHistoryResult>(
+    `/wallets/${address}/balances/assets-history`,
+    options,
+  );
+}
+
+export function getWalletSolBalanceHistoryLegacy(
+  address: string,
+  options?: FetchJsonOptions,
+): Promise<WalletSolBalanceHistoryResult> {
+  return fetchJson<WalletSolBalanceHistoryResult>(
+    `/wallets/${address}/balances/sol-history-legacy`,
+    options,
   );
 }
 
@@ -283,6 +420,90 @@ export function getWalletPairSignals(
   return fetchJson<WalletPairSignalsResult>(
     `/wallets/${addrA}/compare/${addrB}/signals`,
   );
+}
+
+export interface StablecoinInfo {
+  ticker: string;
+  name: string;
+  mint: string;
+  uiAmount: number;
+  decimals: number;
+  sharePct: number;
+}
+
+export interface StablecoinHolder {
+  owner: string;
+  uiAmount: number;
+  percentage: number;
+  label?: string;
+  category?: string;
+}
+
+export interface ConcentrationMetrics {
+  top10Pct: number;
+  top50Pct: number;
+  top100Pct: number;
+}
+
+export interface StablecoinHolderData {
+  holders: StablecoinHolder[];
+  concentration: ConcentrationMetrics;
+}
+
+export interface OverlapHolder {
+  owner: string;
+  label?: string;
+  holdings: Record<string, { amount: number; pct: number }>;
+}
+
+export interface ConcentrationRankEntry {
+  ticker: string;
+  top10Pct: number;
+  top50Pct: number;
+  top100Pct: number;
+}
+
+export interface DiversificationStats {
+  walletCount: number;
+  totalValue: number;
+  pctOfSupply: number;
+}
+
+export interface YieldMarket {
+  id: string;
+  type: "yield" | "lending";
+  name: string;
+  ticker: string;
+  tokenIcon: string;
+  provider: string;
+  providerIcon: string;
+  depositApy: number;
+  baseDepositApy: number;
+  baseDepositApy30d: number | null;
+  baseDepositApy90d: number | null;
+  boosted: boolean;
+  totalDepositUsd: number;
+  borrowApy: number | null;
+  totalBorrowUsd: number | null;
+  url: string | null;
+}
+
+export interface StablecoinDashboardResult {
+  snapshotAt: number;
+  stablecoins: StablecoinInfo[];
+  totalSupply: number;
+  holdersByTicker: Record<string, StablecoinHolderData>;
+  overlap: OverlapHolder[];
+  concentrationRanking: ConcentrationRankEntry[];
+  editorial: string;
+  diversification: DiversificationStats;
+  yieldMarkets: YieldMarket[];
+}
+
+export function getStablecoinDashboard(
+  options?: FetchJsonOptions,
+): Promise<StablecoinDashboardResult> {
+  return fetchJson<StablecoinDashboardResult>("/stablecoins/dashboard", options);
 }
 
 export function getTokenForensics(

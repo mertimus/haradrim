@@ -1,5 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  MAX_BALANCE_HISTORY_CONCURRENCY,
+  MAX_BALANCE_HISTORY_LEGACY_CONCURRENCY,
   HOST,
   IP_BUDGET_UNITS,
   IP_WINDOW_MS,
@@ -10,6 +12,7 @@ import {
   MAX_TOKEN_SNAPSHOT_CONCURRENCY,
   MAX_TRACE_ANALYSIS_CONCURRENCY,
   MAX_WALLET_ANALYSIS_CONCURRENCY,
+  MAX_STABLECOIN_DASHBOARD_CONCURRENCY,
   SESSION_BUDGET_UNITS,
   SESSION_COOKIE_NAME,
   SESSION_SECRET,
@@ -34,6 +37,18 @@ export const HEAVY_ROUTE_POLICIES = {
     cost: 10,
     concurrencyLabel: "trace-analysis",
     maxConcurrency: MAX_TRACE_ANALYSIS_CONCURRENCY,
+  },
+  balanceHistory: {
+    routeKey: "balance-history",
+    cost: 6,
+    concurrencyLabel: "balance-history",
+    maxConcurrency: MAX_BALANCE_HISTORY_CONCURRENCY,
+  },
+  balanceHistoryLegacy: {
+    routeKey: "balance-history-legacy",
+    cost: 12,
+    concurrencyLabel: "balance-history-legacy",
+    maxConcurrency: MAX_BALANCE_HISTORY_LEGACY_CONCURRENCY,
   },
   gtfaRpc: {
     routeKey: "gtfa-rpc",
@@ -64,6 +79,12 @@ export const HEAVY_ROUTE_POLICIES = {
     cost: 14,
     concurrencyLabel: "token-forensics",
     maxConcurrency: MAX_TOKEN_FORENSICS_CONCURRENCY,
+  },
+  stablecoinDashboard: {
+    routeKey: "stablecoin-dashboard",
+    cost: 6,
+    concurrencyLabel: "stablecoin-dashboard",
+    maxConcurrency: MAX_STABLECOIN_DASHBOARD_CONCURRENCY,
   },
 };
 

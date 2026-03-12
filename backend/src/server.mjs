@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createHash } from "node:crypto";
 import {
+  BALANCE_HISTORY_TTL_MS,
   BIRDEYE_API_KEY,
   CACHE_MAX_BODY_BYTES,
   HOST,
@@ -16,6 +17,7 @@ import {
   PROVENANCE_ANALYSIS_TTL_MS,
   TOKEN_FORENSICS_TTL_MS,
   TOKEN_SNAPSHOT_TTL_MS,
+  STABLECOIN_DASHBOARD_TTL_MS,
 } from "./config.mjs";
 import { cachedValue, getCacheSize, getCachedValue, getInflightValue, setCachedValue } from "./cache.mjs";
 import {
@@ -26,10 +28,14 @@ import {
   withConcurrencyLimit,
 } from "./guard.mjs";
 import { analyzeTrace, analyzeWallet } from "./analysis-core.mjs";
+import { analyzeWalletAssetBalanceHistory } from "./asset-balance-history-core.mjs";
+import { analyzeWalletSolBalanceHistory } from "./sol-balance-history-core.mjs";
+import { analyzeWalletSolBalanceHistoryLegacy } from "./sol-balance-history-legacy-core.mjs";
 import { analyzeWalletMintProvenance } from "./provenance-core.mjs";
 import { buildTokenHolderSnapshot } from "./token-snapshot-core.mjs";
 import { analyzeTokenForensics } from "./token-forensics-core.mjs";
 import { analyzeWalletPairSignals } from "./wallet-pair-signals.mjs";
+import { buildStablecoinDashboard } from "./stablecoin-dashboard-core.mjs";
 import { buildWalletApiUrl, fetchWithTimeout, parseEnhancedTransactions } from "./providers.mjs";
 
 const ALLOWED_RPC_METHODS = new Map([
@@ -118,6 +124,18 @@ function matchTraceAnalysis(pathname) {
   return pathname.match(/^\/traces\/([A-Za-z0-9]+)\/flows$/);
 }
 
+function matchWalletSolBalanceHistory(pathname) {
+  return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/balances\/sol-history$/);
+}
+
+function matchWalletAssetBalanceHistory(pathname) {
+  return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/balances\/assets-history$/);
+}
+
+function matchWalletSolBalanceHistoryLegacy(pathname) {
+  return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/balances\/sol-history-legacy$/);
+}
+
 function matchEnhancedCounterpartyHistory(pathname) {
   return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/counterparties\/([A-Za-z0-9]+)\/enhanced-history$/);
 }
@@ -136,6 +154,10 @@ function matchTokenForensics(pathname) {
 
 function matchWalletPairSignals(pathname) {
   return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/compare\/([A-Za-z0-9]+)\/signals$/);
+}
+
+function matchStablecoinDashboard(pathname) {
+  return pathname === "/stablecoins/dashboard";
 }
 
 const GENERIC_HELIUS_SOURCES = new Set([
@@ -365,6 +387,90 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
   sendJson(res, 200, result);
 }
 
+async function handleWalletSolBalanceHistory(req, res, address) {
+  const cacheKey = `wallet-sol-balance-history:${address}`;
+  const cached = getCachedValue(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  const pending = getInflightValue(cacheKey);
+  if (pending) {
+    sendJson(res, 200, await pending);
+    return;
+  }
+
+  enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.balanceHistory);
+  const result = await withConcurrencyLimit(
+    HEAVY_ROUTE_POLICIES.balanceHistory.concurrencyLabel,
+    HEAVY_ROUTE_POLICIES.balanceHistory.maxConcurrency,
+    () =>
+      cachedValue(
+        cacheKey,
+        BALANCE_HISTORY_TTL_MS,
+        () => analyzeWalletSolBalanceHistory(address),
+      ),
+  );
+  sendJson(res, 200, result);
+}
+
+async function handleWalletAssetBalanceHistory(req, res, address) {
+  const cacheKey = `wallet-asset-balance-history:${address}`;
+  const cached = getCachedValue(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  const pending = getInflightValue(cacheKey);
+  if (pending) {
+    sendJson(res, 200, await pending);
+    return;
+  }
+
+  enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.balanceHistory);
+  const result = await withConcurrencyLimit(
+    HEAVY_ROUTE_POLICIES.balanceHistory.concurrencyLabel,
+    HEAVY_ROUTE_POLICIES.balanceHistory.maxConcurrency,
+    () =>
+      cachedValue(
+        cacheKey,
+        BALANCE_HISTORY_TTL_MS,
+        () => analyzeWalletAssetBalanceHistory(address),
+      ),
+  );
+  sendJson(res, 200, result);
+}
+
+async function handleWalletSolBalanceHistoryLegacy(req, res, address) {
+  const cacheKey = `wallet-sol-balance-history-legacy:${address}`;
+  const cached = getCachedValue(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  const pending = getInflightValue(cacheKey);
+  if (pending) {
+    sendJson(res, 200, await pending);
+    return;
+  }
+
+  enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.balanceHistoryLegacy);
+  const result = await withConcurrencyLimit(
+    HEAVY_ROUTE_POLICIES.balanceHistoryLegacy.concurrencyLabel,
+    HEAVY_ROUTE_POLICIES.balanceHistoryLegacy.maxConcurrency,
+    () =>
+      cachedValue(
+        cacheKey,
+        BALANCE_HISTORY_TTL_MS,
+        () => analyzeWalletSolBalanceHistoryLegacy(address),
+      ),
+  );
+  sendJson(res, 200, result);
+}
+
 async function handleEnhancedCounterpartyHistory(req, res, address, counterparty, searchParams) {
   const range = parseRange(searchParams);
   const walletCacheKey = `wallet-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}`;
@@ -525,6 +631,29 @@ async function handleWalletPairSignals(req, res, addrA, addrB) {
   sendJson(res, 200, result);
 }
 
+async function handleStablecoinDashboard(req, res) {
+  const cacheKey = "stablecoin-dashboard";
+  const cached = getCachedValue(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  const pending = getInflightValue(cacheKey);
+  if (pending) {
+    sendJson(res, 200, await pending);
+    return;
+  }
+
+  enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.stablecoinDashboard);
+  const result = await withConcurrencyLimit(
+    HEAVY_ROUTE_POLICIES.stablecoinDashboard.concurrencyLabel,
+    HEAVY_ROUTE_POLICIES.stablecoinDashboard.maxConcurrency,
+    () => cachedValue(cacheKey, STABLECOIN_DASHBOARD_TTL_MS, () => buildStablecoinDashboard()),
+  );
+  sendJson(res, 200, result);
+}
+
 async function handleProxy(req, res, pathname, search) {
   const method = req.method ?? "GET";
   const normalizedPath = normalizePathname(pathname);
@@ -634,6 +763,27 @@ async function requestHandler(req, res) {
       return;
     }
 
+    const balanceHistoryMatch = matchWalletSolBalanceHistory(pathname);
+    if (balanceHistoryMatch) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleWalletSolBalanceHistory(req, res, balanceHistoryMatch[1]);
+      return;
+    }
+
+    const assetBalanceHistoryMatch = matchWalletAssetBalanceHistory(pathname);
+    if (assetBalanceHistoryMatch) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleWalletAssetBalanceHistory(req, res, assetBalanceHistoryMatch[1]);
+      return;
+    }
+
+    const balanceHistoryLegacyMatch = matchWalletSolBalanceHistoryLegacy(pathname);
+    if (balanceHistoryLegacyMatch) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleWalletSolBalanceHistoryLegacy(req, res, balanceHistoryLegacyMatch[1]);
+      return;
+    }
+
     const enhancedHistoryMatch = matchEnhancedCounterpartyHistory(pathname);
     if (enhancedHistoryMatch) {
       assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
@@ -688,6 +838,12 @@ async function requestHandler(req, res) {
     if (walletPairSignalsMatch) {
       assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
       await handleWalletPairSignals(req, res, walletPairSignalsMatch[1], walletPairSignalsMatch[2]);
+      return;
+    }
+
+    if (matchStablecoinDashboard(pathname)) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
+      await handleStablecoinDashboard(req, res);
       return;
     }
 

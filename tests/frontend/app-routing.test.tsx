@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 
@@ -46,6 +46,10 @@ vi.mock("@/components/TraceExplorer", () => ({
   TraceExplorer: () => <div data-testid="trace-explorer" />,
 }));
 
+vi.mock("@/components/BalanceExplorer", () => ({
+  BalanceExplorer: () => <div data-testid="balance-explorer" />,
+}));
+
 vi.mock("@/api", () => ({
   getIdentity: vi.fn(async () => null),
   getBatchIdentity: vi.fn(async () => new Map()),
@@ -77,6 +81,7 @@ describe("App token routing", () => {
     render(<App />);
 
     expect(screen.queryByRole("button", { name: /tokens/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /balances/i })).toBeTruthy();
   });
 
   it.each([
@@ -90,6 +95,36 @@ describe("App token routing", () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe("/");
     });
-    expect(screen.getAllByTestId("search-bar").length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getAllByTestId("search-bar").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("renders the balances route without falling back to the wallet explorer", async () => {
+    window.history.pushState({}, "", "/balances/8CrRU1NzNpjL3k2BwjW3VixAcX6VFc29KHr4KZg8cs2Y");
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("balance-explorer")).toBeTruthy();
+    });
+    expect(screen.queryByTestId("transaction-graph")).toBeNull();
+  });
+
+  it("carries the active wallet into the balances route from the navbar", async () => {
+    const address = "8CrRU1NzNpjL3k2BwjW3VixAcX6VFc29KHr4KZg8cs2Y";
+    window.history.pushState({}, "", `/wallet/${address}`);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("transaction-graph")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /balances/i }));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe(`/balances/${address}`);
+    });
   });
 });

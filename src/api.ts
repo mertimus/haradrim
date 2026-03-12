@@ -801,7 +801,7 @@ function buildWalletIdentity(
     ? allCandidates.reduce((shortest, d) => d.length < shortest.length ? d : shortest)
     : undefined;
   const label = shortestDomain ?? data?.name;
-  const name = shortestDomain ?? data?.name;
+  const name = data?.name ?? shortestDomain;
   const tags = [
     ...domains,
     ...((data?.tags ?? []).filter((tag) => !domains.includes(normalizeSolDomain(tag)))),
