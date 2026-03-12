@@ -15,7 +15,7 @@ const STABLECOINS = [
   { ticker: "JupUSD", name: "JupUSD", mint: "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD" },
 ];
 
-const LARGEST_ACCOUNTS_LIMIT = 200;
+const LARGEST_ACCOUNTS_LIMIT = 20;
 const TOP_HOLDERS_DISPLAY = 20;
 
 function rawToUiAmount(rawAmount, decimals) {
@@ -59,11 +59,13 @@ function parseLargestAccount(entry) {
   }
 }
 
+const LARGEST_ACCOUNTS_TIMEOUT_MS = 60_000;
+
 async function fetchLargestAccounts(mint, limit, rpc) {
   const json = await rpc("getTokenLargestAccountsV2", [
     mint,
     { commitment: "confirmed", limit },
-  ]);
+  ], { timeoutMs: LARGEST_ACCOUNTS_TIMEOUT_MS });
   return Array.isArray(json?.result?.value?.accounts)
     ? json.result.value.accounts
     : [];
@@ -239,36 +241,37 @@ export async function buildStablecoinDashboard(deps = {}) {
   const batchIdentity = deps.getBatchIdentity ?? getBatchIdentity;
   const fetcher = deps.fetchWithTimeout ?? fetchWithTimeout;
 
-  const supplyPromises = STABLECOINS.map((sc) => fetchTokenSupply(sc.mint, rpc));
-  const accountPromises = STABLECOINS.map((sc) =>
-    fetchLargestAccounts(sc.mint, LARGEST_ACCOUNTS_LIMIT, rpc),
-  );
+  // Phase 1: Fetch supply + accounts per coin (concurrency-limited to avoid rate limits)
+  // Yield markets fire independently in parallel
+  const yieldPromise = fetchYieldMarkets(STABLECOINS, fetcher).catch(() => []);
 
-  const [supplies, accountSets, yieldMarkets] = await Promise.all([
-    Promise.all(supplyPromises),
-    Promise.all(accountPromises),
-    fetchYieldMarkets(STABLECOINS, fetcher).catch(() => []),
-  ]);
+  const coinData = await mapWithConcurrency(STABLECOINS, 4, async (sc) => {
+    const [supply, accounts] = await Promise.all([
+      fetchTokenSupply(sc.mint, rpc),
+      fetchLargestAccounts(sc.mint, LARGEST_ACCOUNTS_LIMIT, rpc),
+    ]);
+    return { supply, accounts };
+  });
 
+  // Aggregate holders and collect unique owners
   const holdersByTicker = {};
-  const allHoldersFlat = {};
+  const ownerSet = new Set();
+  const supplies = [];
 
   for (let i = 0; i < STABLECOINS.length; i++) {
     const { ticker } = STABLECOINS[i];
-    const supply = supplies[i];
-    const accounts = accountSets[i];
+    const { supply, accounts } = coinData[i];
+    supplies.push(supply);
     const holders = aggregateByOwner(accounts, supply.decimals, supply.uiAmount);
     holdersByTicker[ticker] = holders;
-    allHoldersFlat[ticker] = holders;
+    for (const h of holders) ownerSet.add(h.owner);
   }
 
-  const allOwners = [
-    ...new Set(
-      Object.values(allHoldersFlat).flatMap((holders) => holders.map((h) => h.owner)),
-    ),
-  ];
-
-  const identityMap = await batchIdentity(allOwners);
+  // Phase 2: Identity + remaining yield in parallel
+  const [identityMap, yieldMarkets] = await Promise.all([
+    batchIdentity([...ownerSet]),
+    yieldPromise,
+  ]);
 
   function enrichHolders(holders) {
     return holders.slice(0, TOP_HOLDERS_DISPLAY).map((h) => {
@@ -301,7 +304,7 @@ export async function buildStablecoinDashboard(deps = {}) {
     };
   }
 
-  const rawOverlap = findMultiStableOverlap(allHoldersFlat);
+  const rawOverlap = findMultiStableOverlap(holdersByTicker);
   const overlap = rawOverlap.map((h) => {
     const identity = identityMap.get(h.owner);
     return {

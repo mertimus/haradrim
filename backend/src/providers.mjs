@@ -72,7 +72,7 @@ async function retryingJsonRequest(makeRequest) {
   throw lastError ?? new Error("request exceeded retry budget");
 }
 
-export async function rpcJson(method, params) {
+export async function rpcJson(method, params, opts = {}) {
   return retryingJsonRequest(() =>
     fetchWithTimeout(HELIUS_RPC_URL, {
       method: "POST",
@@ -83,7 +83,7 @@ export async function rpcJson(method, params) {
         method,
         params,
       }),
-    }),
+    }, opts.timeoutMs),
   );
 }
 
