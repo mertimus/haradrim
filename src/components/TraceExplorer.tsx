@@ -600,7 +600,7 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
                   <div className="flex-1 overflow-y-auto min-h-0">
                     <FlowGroup
                       title="Outflow →"
-                      color="#ff2d2d"
+                      color="#ffb800"
                       collapsed={collapsed.outflow}
                       onToggle={() => setCollapsed((current) => ({ ...current, outflow: !current.outflow }))}
                       counterparties={outflow}
@@ -614,7 +614,7 @@ export function TraceExplorer({ initialAddress, onNavigateToWallet }: TraceExplo
                     />
                     <FlowGroup
                       title="← Inflow"
-                      color="#00ff88"
+                      color="#00d4ff"
                       collapsed={collapsed.inflow}
                       onToggle={() => setCollapsed((current) => ({ ...current, inflow: !current.inflow }))}
                       counterparties={inflow}
@@ -724,7 +724,7 @@ function CpRow({
   isAdded: boolean;
   onAdd: () => void;
 }) {
-  const amountColor = direction === "outflow" ? "#ff2d2d" : "#00ff88";
+  const amountColor = direction === "outflow" ? "#ffb800" : "#00d4ff";
   const primaryAsset = getPrimaryDirectionalAsset(cp, direction);
   const assets = getDirectionalAssets(cp, direction);
   const txCount = getDirectionalTxCount(cp, direction);

@@ -31,21 +31,21 @@ const TOOLTIP_STYLE: React.CSSProperties = {
 function edgeColor(kind: ForensicSignalKind): string {
   switch (kind) {
     case "shared_funding_ancestor":
-      return "#ff2d2d";
+      return "#ffb800";
     case "shared_fee_payer":
-      return "#ec4899";
+      return "#e6a200";
     case "shared_signer":
-      return "#f97316";
+      return "#ffd966";
     case "shared_trading_venue":
-      return "#60a5fa";
+      return "#7cc6fe";
     case "amount_similarity":
-      return "#00ff88";
+      return "#00d4ff";
     case "shared_token_source":
-      return "#84cc16";
+      return "#94a3b8";
     case "synchronized_acquisition":
-      return "#a855f7";
+      return "#4a9eff";
     case "reciprocal_transfer":
-      return "#22d3ee";
+      return "#b0d4ff";
     case "direct_transfer":
     default:
       return "#ffb800";

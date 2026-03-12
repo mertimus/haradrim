@@ -375,7 +375,7 @@ export function buildWalletInsights(params: {
           title: "Largest Outflow",
           value: describeCounterparty(byOutflow),
           description: `${formatSolCompact(byOutflow.solSent)} sent across ${byOutflow.txCount.toLocaleString()} tx`,
-          accentColor: "#ff2d2d",
+          accentColor: "#ffb800",
           address: byOutflow.address,
           preset: "outflows",
         }
@@ -384,7 +384,7 @@ export function buildWalletInsights(params: {
           title: "Largest Outflow",
           value: "No direct outflows",
           description: "Nothing in the current wallet view has outgoing volume.",
-          accentColor: "#ff2d2d",
+          accentColor: "#ffb800",
           preset: "outflows",
         },
     byInflow
@@ -393,7 +393,7 @@ export function buildWalletInsights(params: {
           title: "Largest Inflow",
           value: describeCounterparty(byInflow),
           description: `${formatSolCompact(byInflow.solReceived)} received across ${byInflow.txCount.toLocaleString()} tx`,
-          accentColor: "#00ff88",
+          accentColor: "#00d4ff",
           address: byInflow.address,
           preset: "inflows",
         }
@@ -402,7 +402,7 @@ export function buildWalletInsights(params: {
           title: "Largest Inflow",
           value: "No direct inflows",
           description: "Nothing in the current wallet view has incoming volume.",
-          accentColor: "#00ff88",
+          accentColor: "#00d4ff",
           preset: "inflows",
         },
     sharedFunders.length > 0
@@ -411,7 +411,7 @@ export function buildWalletInsights(params: {
           title: "Shared Funder",
           value: sharedFunders[0].funderLabel ?? truncAddr(sharedFunders[0].funderAddress),
           description: `${sharedFunders.length + 1} wallets funded by same source`,
-          accentColor: "#ff2d2d",
+          accentColor: "#ffb800",
           address: sharedFunders[0].funderAddress,
         }
       : sharedComparisonCount > 0 && strongestSharedCounterparty
@@ -446,7 +446,7 @@ export function buildWalletInsights(params: {
           title: "Newest Counterparty",
           value: describeCounterparty(byNewest),
           description: `First seen ${formatDateCompact(byNewest.firstSeen)}`,
-          accentColor: "#a855f7",
+          accentColor: "#00d4ff",
           address: byNewest.address,
           preset: "new30d",
         }
@@ -455,7 +455,7 @@ export function buildWalletInsights(params: {
           title: "Newest Counterparty",
           value: "No new counterparties",
           description: "No counterparties are available in the current view.",
-          accentColor: "#a855f7",
+          accentColor: "#00d4ff",
           preset: "new30d",
         },
   ];

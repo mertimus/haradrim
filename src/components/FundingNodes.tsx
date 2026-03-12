@@ -178,7 +178,7 @@ export const FundingEdge = memo(function FundingEdge({
         id={id}
         path={edgePath}
         style={{
-          stroke: d.isHighlight ? "#ff6b6b" : "#6b7b8d",
+          stroke: d.isHighlight ? "#ffb800" : "#6b7b8d",
           strokeWidth: d.thickness,
           opacity: d.opacity,
         }}

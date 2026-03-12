@@ -184,7 +184,7 @@ export function WalletProfile({
           {!balancesFailed && balances && balances.totalUsdValue > 0 && (
             <div className="profile-reveal flex-none pr-4 border-r border-border mr-4" style={{ animationDelay: "0.32s" }}>
               <div className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Total</div>
-              <span className="font-mono text-sm font-bold text-primary text-glow-cyan">
+              <span className="font-mono text-sm font-bold text-primary">
                 {fmtUsd(balances.totalUsdValue)}
               </span>
             </div>

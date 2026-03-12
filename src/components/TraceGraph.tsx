@@ -26,8 +26,8 @@ function truncAddr(addr: string): string {
 function categoryColor(category?: string): string {
   switch (category) {
     case "exchange": return "#ffb800";
-    case "defi": return "#00ff88";
-    case "nft": return "#a855f7";
+    case "defi": return "#7cc6fe";
+    case "nft": return "#ffd966";
     case "domain":
     case "SNS": return "#00d4ff";
     default: return "#4a5a6a";

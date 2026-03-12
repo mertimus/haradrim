@@ -22,10 +22,10 @@ export function getHolderTier(pct: number): HolderTier {
 }
 
 export const TIER_COLORS: Record<HolderTier, string> = {
-  whale: "#ff2d2d",
+  whale: "#ffb800",
   large: "#ffb800",
   medium: "#00d4ff",
-  small: "#00ff88",
+  small: "#6b7b8d",
   micro: "#6b7b8d",
 };
 
@@ -40,16 +40,16 @@ export const TIER_LABELS: Record<HolderTier, string> = {
 // ---- Cluster colors (Bubblemaps-style) ----
 
 export const CLUSTER_COLORS = [
-  "#00ff88", // emerald
-  "#a855f7", // purple
-  "#ff2d8a", // hot pink
-  "#ff8c00", // orange
-  "#22d3ee", // cyan
-  "#84cc16", // lime
-  "#f43f5e", // rose
-  "#6366f1", // indigo
-  "#eab308", // yellow
-  "#14b8a6", // teal
+  "#00d4ff",
+  "#ffb800",
+  "#7cc6fe",
+  "#ffd966",
+  "#94a3b8",
+  "#4a9eff",
+  "#e6a200",
+  "#b0c4de",
+  "#3b82f6",
+  "#d4a00a",
 ];
 
 const DIMMED_COLOR = "#2a3545"; // unconnected holders in connection mode

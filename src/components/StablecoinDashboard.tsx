@@ -33,7 +33,7 @@ const TICKER_COLORS: Record<string, string> = {
   PYUSD: "#0070e0",
   USDG: "#ffb800",
   CASH: "#8b5cf6",
-  USD1: "#ff6b6b",
+  USD1: "#94a3b8",
   syrupUSDC: "#e8a838",
   USX: "#36d6c3",
   EURC: "#2775ca",
@@ -396,7 +396,7 @@ function YieldMarkets({ markets }: { markets: YieldMarket[] }) {
         </CardTitle>
         {/* ── Filters: type + asset in one row ── */}
         <div className="mt-2 flex flex-wrap items-center gap-1">
-          {([["ALL", "#fff"], ["yield", "#34d399"], ["lending", "#fb923c"]] as const).map(([value, color]) => (
+          {([["ALL", "#fff"], ["yield", "#00d4ff"], ["lending", "#ffb800"]] as const).map(([value, color]) => (
             <button
               key={value}
               onClick={() => setTypeFilter(value as "ALL" | "yield" | "lending")}
@@ -453,7 +453,7 @@ function YieldMarkets({ markets }: { markets: YieldMarket[] }) {
                 className="group border-b-border/30 transition-colors hover:bg-muted/30"
                 style={{
                   boxShadow: `inset 2px 0 0 ${
-                    m.type === "lending" ? "#fb923c" : "#34d399"
+                    m.type === "lending" ? "#ffb800" : "#00d4ff"
                   }`,
                 }}
               >
@@ -516,7 +516,7 @@ function YieldMarkets({ markets }: { markets: YieldMarket[] }) {
                   <div className="flex flex-col items-end gap-0.5">
                     {/* Primary: current APY */}
                     <div className="flex items-center gap-0.5">
-                      <span className="font-mono text-[11px] font-bold tabular-nums text-emerald-400">
+                      <span className="font-mono text-[11px] font-bold tabular-nums text-primary">
                         {(m.depositApy * 100).toFixed(2)}%
                       </span>
                       {m.boosted && (
@@ -536,7 +536,7 @@ function YieldMarkets({ markets }: { markets: YieldMarket[] }) {
                     )}
                     {/* Tertiary: borrow rate (lending only) */}
                     {m.type === "lending" && m.borrowApy != null && (
-                      <span className="font-mono text-[8px] tabular-nums text-orange-400/70">
+                      <span className="font-mono text-[8px] tabular-nums text-accent/70">
                         borrow {(m.borrowApy * 100).toFixed(2)}%
                       </span>
                     )}

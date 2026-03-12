@@ -172,7 +172,7 @@ function WalletFilterSliders({
             <span className="font-mono text-[8px] uppercase tracking-[0.15em] text-muted-foreground">
               Net
             </span>
-            <span className={`font-mono text-[9px] ${netThreshold > 0 ? "text-[#00ff88]" : netThreshold < 0 ? "text-destructive" : "text-muted-foreground/50"}`}>
+            <span className={`font-mono text-[9px] ${netThreshold > 0 ? "text-primary" : netThreshold < 0 ? "text-accent" : "text-muted-foreground/50"}`}>
               {netThreshold === 0 ? "all" : `${netThreshold > 0 ? "inflow" : "outflow"} ${formatSignedSol(netThreshold)}`}
             </span>
           </div>
@@ -203,7 +203,7 @@ function WalletFilterSliders({
                   style={{
                     left: `${left}%`,
                     right: `${right}%`,
-                    background: netThreshold > 0 ? "#00ff88" : "#ff4444",
+                    background: netThreshold > 0 ? "#00d4ff" : "#ffb800",
                     opacity: 0.5,
                   }}
                 />
@@ -403,8 +403,8 @@ export function WalletOverlayPanel({
 
       {/* Shared funder badge */}
       {sharedFunders.length > 0 && (
-        <div className="rounded border border-destructive/20 bg-destructive/5 px-2 py-1">
-          <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-destructive/80">
+        <div className="rounded border border-accent/20 bg-accent/5 px-2 py-1">
+          <div className="font-mono text-[7px] uppercase tracking-[0.18em] text-accent/80">
             Shared Funder Detected
           </div>
           <div className="mt-0.5 font-mono text-[9px] text-foreground">

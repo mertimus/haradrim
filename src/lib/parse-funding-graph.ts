@@ -18,7 +18,7 @@ function funderSize(holdersFunded: number, maxFunded: number): number {
 }
 
 function funderColor(holdersFunded: number, maxFunded: number): string {
-  if (maxFunded <= 2) return holdersFunded >= 2 ? "#ff2d2d" : "#ffb800";
+  if (maxFunded <= 2) return holdersFunded >= 2 ? "#ffb800" : "#ffb800";
   const t = Math.log1p(holdersFunded) / Math.log1p(maxFunded);
   const r = 255;
   const g = Math.round(184 - t * 139);

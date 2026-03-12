@@ -33,7 +33,7 @@ interface BalanceExplorerProps {
   initialAddress?: string;
 }
 
-const ASSET_COLORS = ["#00d4ff", "#ffb800", "#4df2a3", "#ff6b35", "#7cc6fe", "#ff4da6"];
+const ASSET_COLORS = ["#00d4ff", "#ffb800", "#7cc6fe", "#ffd966", "#94a3b8", "#4a9eff"];
 
 function getBalanceAddressFromUrl(pathname = window.location.pathname): string {
   const match = pathname.match(/^\/balances\/([A-Za-z0-9]+)$/);
@@ -150,7 +150,7 @@ function HoldingStatusPill({ asset }: { asset: WalletAssetBalanceHistory }) {
   return (
     <div className={`inline-flex rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.2em] ${
       asset.currentlyHeld
-        ? "border-[#4df2a3]/20 bg-[#4df2a3]/8 text-[#4df2a3]"
+        ? "border-primary/20 bg-primary/8 text-primary"
         : "border-border/80 bg-background/70 text-muted-foreground"
     }`}
     >
@@ -253,7 +253,7 @@ function HoldingsTable({ assets }: { assets: WalletAssetBalanceHistory[] }) {
                   {formatAssetAmount(asset.currentBalance, asset)}
                 </TableCell>
                 <TableCell className={`text-right font-mono text-[11px] tabular-nums ${
-                  asset.netChange < 0 ? "text-destructive/90" : "text-[#4df2a3]"
+                  asset.netChange < 0 ? "text-accent/90" : "text-primary"
                 }`}
                 >
                   {formatSignedAssetAmount(asset.netChange, asset)}
@@ -381,7 +381,7 @@ export function BalanceExplorer({ initialAddress }: BalanceExplorerProps) {
     return (
       <div className="flex flex-1 overflow-auto">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6">
-          <section className="corner-bracket relative overflow-hidden rounded-3xl border border-border/90 bg-[radial-gradient(circle_at_top,_rgba(0,212,255,0.14),_transparent_44%),linear-gradient(135deg,rgba(13,19,33,0.98),rgba(9,15,28,0.95))] p-6">
+          <section className="corner-bracket relative overflow-hidden rounded-3xl border border-border/90 bg-[radial-gradient(circle_at_top,_rgba(0,212,255,0.06),_transparent_44%),linear-gradient(135deg,rgba(13,19,33,0.98),rgba(9,15,28,0.95))] p-6">
             <span className="corner-bl" />
             <span className="corner-br" />
             <div className="max-w-4xl">

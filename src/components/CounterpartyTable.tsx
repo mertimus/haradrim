@@ -78,7 +78,7 @@ function fmtDate(ts: number): string {
 
 function strengthBars(score: number | undefined): { filled: number; color: string } {
   if (score == null || score <= 0) return { filled: 0, color: "#6b7280" };
-  if (score >= 6) return { filled: 3, color: "#ff2d2d" };
+  if (score >= 6) return { filled: 3, color: "#ffb800" };
   if (score >= 3.5) return { filled: 2, color: "#ffb800" };
   return { filled: 1, color: "#6b7280" };
 }
@@ -273,8 +273,8 @@ export function CounterpartyTable({
 
   const graphFlowPills: { key: GraphFlowFilter; label: string; count: number; color: string }[] = [
     { key: "all", label: "All", count: graphFlowCounts.all, color: "#c8d6e5" },
-    { key: "inflow", label: "Inflows", count: graphFlowCounts.inflow, color: "#00ff88" },
-    { key: "outflow", label: "Outflows", count: graphFlowCounts.outflow, color: "#ff2d2d" },
+    { key: "inflow", label: "Inflows", count: graphFlowCounts.inflow, color: "#00d4ff" },
+    { key: "outflow", label: "Outflows", count: graphFlowCounts.outflow, color: "#ffb800" },
   ];
 
   return (
@@ -440,11 +440,11 @@ export function CounterpartyTable({
                         style={{
                           background:
                             cp.accountType === "token" ? "rgba(255, 184, 0, 0.15)" :
-                            cp.accountType === "program" ? "rgba(168, 85, 247, 0.15)" :
+                            cp.accountType === "program" ? "rgba(124, 198, 254, 0.15)" :
                             "rgba(255, 255, 255, 0.07)",
                           color:
                             cp.accountType === "token" ? "#ffb800" :
-                            cp.accountType === "program" ? "#a855f7" :
+                            cp.accountType === "program" ? "#7cc6fe" :
                             "#6b7280",
                         }}
                       >
@@ -471,7 +471,7 @@ export function CounterpartyTable({
               </TableCell>
               <TableCell
                 className={`text-right font-mono text-[10px] tabular-nums align-top ${
-                  cp.solNet >= 0 ? "text-[#00ff88]" : "text-destructive"
+                  cp.solNet >= 0 ? "text-primary" : "text-accent"
                 }`}
               >
                 {cp.solNet >= 0 ? "+" : ""}

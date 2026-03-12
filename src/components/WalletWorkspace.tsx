@@ -499,7 +499,7 @@ export function WalletWorkspace({ mode }: WalletWorkspaceProps) {
               })}`}
           </span>
           <span className="flex items-center gap-1 font-mono text-[8px] uppercase tracking-widest text-muted-foreground">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#00ff88]" />
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary" />
             Helius RPC
           </span>
         </div>

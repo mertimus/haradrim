@@ -31,7 +31,7 @@ function fmtAmount(value: number): string {
 }
 
 function attributionTone(attribution: "exact" | "possible" | "unknown"): string {
-  if (attribution === "exact") return "border-[#00ff88]/30 text-[#00ff88]";
+  if (attribution === "exact") return "border-primary/30 text-primary";
   if (attribution === "possible") return "border-[#ffb800]/30 text-[#ffb800]";
   return "border-destructive/30 text-destructive";
 }

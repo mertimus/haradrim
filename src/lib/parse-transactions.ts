@@ -139,7 +139,7 @@ export interface OverlayWallet {
   funding?: FundingSource | null;
 }
 
-export const DEFAULT_WALLET_COLORS = ["#00d4ff", "#ff6b35", "#a855f7", "#ffb800", "#00ff88", "#ff4da6", "#ffd700", "#8b5cf6"];
+export const DEFAULT_WALLET_COLORS = ["#00d4ff", "#ffb800", "#7cc6fe", "#ffd966", "#94a3b8", "#4a9eff", "#e6a200", "#b0c4de"];
 
 /** Generate a color for wallet index i, cycling through defaults then generating hsl */
 export function getWalletColor(i: number, overrides?: Map<number, string>): string {

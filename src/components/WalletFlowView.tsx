@@ -300,9 +300,9 @@ function FlowLane({
   const solAmount = getSideAmount(counterparty, side);
   const pct = maxSideAmount > 0 ? solAmount / maxSideAmount : 0;
   const barWidth = `${20 + pct * 80}%`;
-  const color = side === "outflow" ? "#ff4d4d" : "#00ff88";
+  const color = side === "outflow" ? "#ffb800" : "#00d4ff";
   const barGlow =
-    side === "outflow" ? "rgba(255, 77, 77, 0.35)" : "rgba(0, 255, 136, 0.35)";
+    side === "outflow" ? "rgba(255, 184, 0, 0.35)" : "rgba(0, 212, 255, 0.35)";
 
   // Get top token transfers for this side, max 2
   const sideTokens = useMemo(() => {
@@ -478,7 +478,7 @@ function VirtualFlowColumn({
       <div className="flex items-center justify-between px-1 pb-2">
         <div
           className="font-mono text-[9px] uppercase tracking-[0.22em]"
-          style={{ color: side === "outflow" ? "#ff4d4d" : "#00ff88" }}
+          style={{ color: side === "outflow" ? "#ffb800" : "#00d4ff" }}
         >
           {title}
         </div>

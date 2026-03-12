@@ -135,11 +135,11 @@ export function ExplorerLanding({ mode, action, error }: ExplorerLandingProps) {
         </section>
 
         <section className="animate-reveal reveal-delay-4">
-          <div className="corner-bracket scanline relative overflow-hidden rounded-[26px] border border-primary/20 bg-card/80 p-4 shadow-[0_0_60px_rgba(0,212,255,0.08)] sm:p-5">
+          <div className="corner-bracket scanline relative overflow-hidden rounded-[26px] border border-primary/20 bg-card/80 p-4 shadow-[0_0_40px_rgba(0,212,255,0.04)] sm:p-5">
             <div className="corner-bl" />
             <div className="corner-br" />
             <div className="graph-grid-bg absolute inset-0 opacity-55" />
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(0,212,255,0.16),_transparent_42%),radial-gradient(circle_at_bottom_right,_rgba(0,212,255,0.12),_transparent_36%)]" />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(0,212,255,0.06),_transparent_42%),radial-gradient(circle_at_bottom_right,_rgba(0,212,255,0.04),_transparent_36%)]" />
 
             <div className="relative z-10 space-y-4">
               <div className="flex items-start justify-between gap-4">
@@ -195,8 +195,8 @@ function FlowsPreview() {
       <div className="space-y-3">
         <FlowLane
           title="Outflow lane"
-          tone="rgba(255, 45, 45, 0.24)"
-          accent="#ff6b6b"
+          tone="rgba(255, 184, 0, 0.12)"
+          accent="#ffb800"
           rows={[
             ["Exchange desk", "41.2 SOL", "12 tx"],
             ["Router cluster", "9.6 SOL", "4 tx"],
@@ -205,8 +205,8 @@ function FlowsPreview() {
         />
         <FlowLane
           title="Inflow lane"
-          tone="rgba(0, 255, 136, 0.18)"
-          accent="#00ff88"
+          tone="rgba(0, 212, 255, 0.12)"
+          accent="#00d4ff"
           rows={[
             ["Funding wallet", "27.4 SOL", "8 tx"],
             ["OTC peer", "11.8 SOL", "3 tx"],

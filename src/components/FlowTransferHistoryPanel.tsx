@@ -92,7 +92,7 @@ function semanticTone(item: FlowTransferHistoryItem): string {
     case "two-way":
       return "border-primary/30 bg-primary/10 text-primary";
     case "inflow":
-      return "border-[#00ff88]/30 bg-[#00ff88]/10 text-[#00ff88]";
+      return "border-primary/30 bg-primary/10 text-primary";
     default:
       return "border-destructive/30 bg-destructive/10 text-destructive";
   }
@@ -119,7 +119,7 @@ function AssetGroup({
   legs: FlowTransferHistoryLeg[];
   tone: "inflow" | "outflow";
 }) {
-  const amountClass = tone === "inflow" ? "text-[#00ff88]" : "text-destructive";
+  const amountClass = tone === "inflow" ? "text-primary" : "text-accent";
 
   return (
     <div className="rounded border border-border/80 bg-card/70 px-1.5 py-1.5">
@@ -206,11 +206,11 @@ export function FlowTransferHistoryPanel({
           </div>
           <div className="rounded border border-border bg-background/70 px-1.5 py-1">
             <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Recv SOL</div>
-            <div className="mt-0.5 font-mono text-[11px] font-bold text-[#00ff88]">{fmtAmount(detail.solReceived)}</div>
+            <div className="mt-0.5 font-mono text-[11px] font-bold text-primary">{fmtAmount(detail.solReceived)}</div>
           </div>
           <div className="rounded border border-border bg-background/70 px-1.5 py-1">
             <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Net SOL</div>
-            <div className={`mt-0.5 font-mono text-[11px] font-bold ${detail.solNet >= 0 ? "text-[#00ff88]" : "text-destructive"}`}>
+            <div className={`mt-0.5 font-mono text-[11px] font-bold ${detail.solNet >= 0 ? "text-primary" : "text-accent"}`}>
               {detail.solNet >= 0 ? "+" : ""}
               {fmtAmount(detail.solNet)}
             </div>
@@ -295,7 +295,7 @@ export function FlowTransferHistoryPanel({
                       <div className={`rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] ${semanticTone(item)}`}>
                         {item.enhancedType ? item.enhancedType.replace(/_/g, " ") : semanticLabel(item)}
                       </div>
-                      <div className={`font-mono text-[10px] font-bold ${item.solNet >= 0 ? "text-[#00ff88]" : "text-destructive"}`}>
+                      <div className={`font-mono text-[10px] font-bold ${item.solNet >= 0 ? "text-primary" : "text-accent"}`}>
                         {item.solNet >= 0 ? "+" : ""}
                         {fmtAmount(item.solNet)} SOL
                       </div>

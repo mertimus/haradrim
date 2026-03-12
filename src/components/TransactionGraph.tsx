@@ -51,9 +51,9 @@ function categoryColor(category?: string): string {
     case "exchange":
       return "#ffb800";
     case "defi":
-      return "#00ff88";
+      return "#7cc6fe";
     case "nft":
-      return "#a855f7";
+      return "#ffd966";
     case "domain":
     case "SNS":
       return "#00d4ff";
@@ -66,8 +66,8 @@ function colorToRgb(hex: string): string {
   switch (hex) {
     case "#00d4ff": return "0, 212, 255";
     case "#ffb800": return "255, 184, 0";
-    case "#00ff88": return "0, 255, 136";
-    case "#a855f7": return "168, 85, 247";
+    case "#7cc6fe": return "124, 198, 254";
+    case "#ffd966": return "255, 217, 102";
     case "#ff6b35": return "255, 107, 53";
     default: return "107, 123, 141";
   }
@@ -381,7 +381,7 @@ const FlowEdge = memo(function FlowEdge({
     sourceX, sourceY, targetX, targetY,
   });
 
-  const strokeColor = d.isOutflow ? "#ff2d2d" : "#00ff88";
+  const strokeColor = d.isOutflow ? "#ffb800" : "#00d4ff";
   const opacity = 0.18 + Math.min(Math.max(d.intensity ?? 0, 0), 1) * 0.72;
 
   return (
@@ -400,9 +400,9 @@ const FlowEdge = memo(function FlowEdge({
         className="edge-tooltip" style={{ overflow: "visible" }}>
         <div style={TOOLTIP_STYLE}>
           <div>
-            <span style={{ color: "#ff2d2d" }}>{fmtSol(d.solSent)}</span>
+            <span style={{ color: "#ffb800" }}>{fmtSol(d.solSent)}</span>
             {" sent / "}
-            <span style={{ color: "#00ff88" }}>{fmtSol(d.solReceived)}</span>
+            <span style={{ color: "#00d4ff" }}>{fmtSol(d.solReceived)}</span>
             {" recv"}
           </div>
           <div style={{ color: "#6b7b8d" }}>{d.txCount} tx</div>

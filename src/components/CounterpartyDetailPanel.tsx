@@ -92,10 +92,10 @@ function accountTypeLabel(detail: SelectedCounterpartyDetail): string | null {
 }
 
 const SIGNAL_COLORS: Record<string, string> = {
-  shared_fee_payer: "#ff2d2d",
-  shared_signer: "#ff6b35",
+  shared_fee_payer: "#ffb800",
+  shared_signer: "#e6a200",
   synchronized_timing: "#ffb800",
-  shared_funding_ancestor: "#a855f7",
+  shared_funding_ancestor: "#ffd966",
 };
 
 function signalLabel(kind: string): string {
@@ -228,7 +228,7 @@ export function CounterpartyDetailPanel({
             </Badge>
           )}
           {detail.firstSeen >= recentCutoff && (
-            <Badge variant="outline" className="border-[#00ff88]/30 px-1.5 py-0 font-mono text-[8px] text-[#00ff88]">
+            <Badge variant="outline" className="border-primary/30 px-1.5 py-0 font-mono text-[8px] text-primary">
               New 30d
             </Badge>
           )}
@@ -274,7 +274,7 @@ export function CounterpartyDetailPanel({
         </div>
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
           <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Recv SOL</div>
-          <div className="mt-0.5 font-mono text-[11px] font-bold text-[#00ff88]">{fmtSol(detail.solReceived)}</div>
+          <div className="mt-0.5 font-mono text-[11px] font-bold text-primary">{fmtSol(detail.solReceived)}</div>
           {detail.sourceStats && detail.sourceStats.size > 1 && (
             <div className="mt-0.5 space-y-px">
               {detail.connectedWallets.map((w) => {
@@ -292,7 +292,7 @@ export function CounterpartyDetailPanel({
         </div>
         <div className="rounded border border-border bg-background/70 px-1.5 py-1">
           <div className="font-mono text-[6px] uppercase tracking-[0.14em] text-muted-foreground">Net SOL</div>
-          <div className={`mt-0.5 font-mono text-[11px] font-bold ${detail.solNet >= 0 ? "text-[#00ff88]" : "text-destructive"}`}>
+          <div className={`mt-0.5 font-mono text-[11px] font-bold ${detail.solNet >= 0 ? "text-primary" : "text-accent"}`}>
             {detail.solNet >= 0 ? "+" : ""}
             {fmtSol(detail.solNet)}
           </div>

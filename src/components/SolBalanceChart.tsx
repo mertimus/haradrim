@@ -183,7 +183,7 @@ export function SolBalanceChart({ points }: SolBalanceChartProps) {
         </div>
         <div className="text-right">
           <div
-            className={`font-mono text-xs ${activePoint && activePoint.deltaSol < 0 ? "text-destructive/90" : "text-[#4df2a3]"}`}
+            className={`font-mono text-xs ${activePoint && activePoint.deltaSol < 0 ? "text-accent/90" : "text-primary"}`}
           >
             {activePoint ? formatSignedSol(activePoint.deltaSol) : "0 SOL"}
           </div>

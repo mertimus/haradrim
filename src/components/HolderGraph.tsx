@@ -207,7 +207,7 @@ interface ContextMenuState {
 
 // Bundle color palette — matches HolderTable
 const BUNDLE_COLORS = [
-  "#a855f7", "#f97316", "#06b6d4", "#ec4899",
+  "#ffd966", "#f97316", "#06b6d4", "#ec4899",
   "#84cc16", "#eab308", "#14b8a6", "#f43f5e",
 ];
 const EMPTY_EDGES: Edge[] = [];
@@ -569,14 +569,14 @@ export function HolderGraph({
                     onClick={() => onFundCluster(cluster.members)}
                     disabled={walkingFunding}
                     style={{
-                      background: "rgba(255, 45, 45, 0.1)",
-                      border: "1px solid rgba(255, 45, 45, 0.3)",
+                      background: "rgba(255, 184, 0, 0.1)",
+                      border: "1px solid rgba(255, 184, 0, 0.3)",
                       borderRadius: 3,
                       padding: "1px 5px",
                       cursor: walkingFunding ? "default" : "pointer",
                       fontFamily: "var(--font-mono)",
                       fontSize: 8,
-                      color: "#ff2d2d",
+                      color: "#ffb800",
                       flexShrink: 0,
                       opacity: walkingFunding ? 0.4 : 1,
                     }}
@@ -731,14 +731,14 @@ export function HolderGraph({
                     onClick={() => onFundCluster(c.members)}
                     disabled={walkingFunding}
                     style={{
-                      background: "rgba(255, 45, 45, 0.1)",
-                      border: "1px solid rgba(255, 45, 45, 0.3)",
+                      background: "rgba(255, 184, 0, 0.1)",
+                      border: "1px solid rgba(255, 184, 0, 0.3)",
                       borderRadius: 3,
                       padding: "1px 5px",
                       cursor: walkingFunding ? "default" : "pointer",
                       fontFamily: "var(--font-mono)",
                       fontSize: 8,
-                      color: "#ff2d2d",
+                      color: "#ffb800",
                       flexShrink: 0,
                       opacity: walkingFunding ? 0.4 : 1,
                     }}
@@ -799,7 +799,7 @@ export function HolderGraph({
                 gap: 6,
                 background:
                   highlightedFunder === cf.address
-                    ? "rgba(255, 45, 45, 0.12)"
+                    ? "rgba(255, 184, 0, 0.12)"
                     : "none",
                 border: "none",
                 padding: "2px 4px",
@@ -814,7 +814,7 @@ export function HolderGraph({
               onMouseEnter={(e) => {
                 if (highlightedFunder !== cf.address)
                   (e.currentTarget as HTMLButtonElement).style.background =
-                    "rgba(255, 45, 45, 0.06)";
+                    "rgba(255, 184, 0, 0.06)";
               }}
               onMouseLeave={(e) => {
                 if (highlightedFunder !== cf.address)
@@ -828,14 +828,14 @@ export function HolderGraph({
                   width: 6,
                   height: 6,
                   borderRadius: "50%",
-                  backgroundColor: "#ff2d2d",
+                  backgroundColor: "#ffb800",
                   flexShrink: 0,
                 }}
               />
               <span className="truncate" style={{ flex: 1 }}>
                 {cf.label || truncAddr(cf.address)}
               </span>
-              <span style={{ color: "#ff2d2d", flexShrink: 0 }}>
+              <span style={{ color: "#ffb800", flexShrink: 0 }}>
                 {cf.holdersFunded} holders ({cf.holdersPctFunded.toFixed(1)}%)
               </span>
             </button>
