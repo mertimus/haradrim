@@ -295,10 +295,19 @@ async function fetchJson<T>(path: string, options?: FetchJsonOptions): Promise<T
   try {
     const res = await fetch(`${API_BASE_URL}${path}`, { signal });
     const text = await res.text();
-    const payload = text ? JSON.parse(text) : null;
     if (!res.ok) {
-      throw new Error(payload?.message ?? payload?.error ?? `Request failed (${res.status})`);
+      let message = `Request failed (${res.status})`;
+      try {
+        const payload = text ? JSON.parse(text) : null;
+        if (payload?.message || payload?.error) {
+          message = payload.message ?? payload.error;
+        }
+      } catch {
+        // Server returned non-JSON (e.g. HTML error page) — use status text
+      }
+      throw new Error(message);
     }
+    const payload = text ? JSON.parse(text) : null;
     return payload as T;
   } finally {
     cleanup();

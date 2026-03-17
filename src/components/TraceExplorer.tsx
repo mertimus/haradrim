@@ -305,16 +305,18 @@ export function TraceExplorer({
         // If metadata is still pending, poll until enriched
         if (data.metadataPending) {
           const poll = (attempt: number) => {
-            const delay = Math.min(2000 * attempt, 10000);
+            const delay = Math.min(3000 * attempt, 15000);
             const timer = setTimeout(async () => {
               pollTimersRef.current.delete(timer);
               try {
                 const enriched = await getTraceAnalysis(address, undefined, opts);
                 fetchedFlowsRef.current.set(address, enriched);
                 publishFlowUpdate(address, enriched);
-                if (enriched.metadataPending && attempt < 10) poll(attempt + 1);
-              } catch {
-                if (attempt < 10) poll(attempt + 1);
+                if (enriched.metadataPending && attempt < 6) poll(attempt + 1);
+              } catch (err) {
+                // Stop polling on rate limit (429) — retrying will just burn more budget
+                const is429 = err instanceof Error && err.message.includes("429");
+                if (!is429 && attempt < 6) poll(attempt + 1);
               }
             }, delay);
             pollTimersRef.current.add(timer);
