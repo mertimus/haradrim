@@ -140,6 +140,10 @@ function matchEnhancedCounterpartyHistory(pathname) {
   return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/counterparties\/([A-Za-z0-9]+)\/enhanced-history$/);
 }
 
+function matchParseTransactions(pathname) {
+  return pathname === "/transactions/parse";
+}
+
 function matchWalletTokenProvenance(pathname) {
   return pathname.match(/^\/wallets\/([A-Za-z0-9]+)\/tokens\/([A-Za-z0-9]+)\/provenance$/);
 }
@@ -538,6 +542,46 @@ async function handleEnhancedCounterpartyHistory(req, res, address, counterparty
   sendJson(res, 200, result);
 }
 
+async function handleParseTransactions(req, res) {
+  const bodyText = await readBody(req);
+  let signatures;
+  try { ({ signatures } = JSON.parse(bodyText)); }
+  catch { sendJson(res, 400, { error: "Invalid JSON" }); return; }
+  if (!Array.isArray(signatures) || signatures.length === 0) {
+    sendJson(res, 200, { transactions: [] });
+    return;
+  }
+  const capped = signatures.slice(0, 100);
+  const cacheKey = `parse-txns:${createHash("sha1").update(capped.join(",")).digest("hex")}`;
+  const cached = getCachedValue(cacheKey);
+  if (cached) { sendJson(res, 200, cached); return; }
+  const pending = getInflightValue(cacheKey);
+  if (pending) { sendJson(res, 200, await pending); return; }
+
+  enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.enhancedHistory);
+  const result = await withConcurrencyLimit(
+    HEAVY_ROUTE_POLICIES.enhancedHistory.concurrencyLabel,
+    HEAVY_ROUTE_POLICIES.enhancedHistory.maxConcurrency,
+    () => cachedValue(cacheKey, ENHANCED_HISTORY_TTL_MS, async () => {
+      const parsed = await parseEnhancedTransactions(capped);
+      return {
+        transactions: parsed.map((tx) => ({
+          signature: tx.signature,
+          type: tx.type,
+          description: tx.description,
+          source: tx.source,
+          timestamp: tx.timestamp,
+          fee: tx.fee,
+          feePayer: tx.feePayer,
+          nativeTransfers: tx.nativeTransfers,
+          tokenTransfers: tx.tokenTransfers,
+        })),
+      };
+    }),
+  );
+  sendJson(res, 200, result);
+}
+
 async function handleWalletTokenProvenance(req, res, address, mint, searchParams) {
   const maxDepth = Number(searchParams.get("maxDepth") ?? "");
   const candidateLimit = Number(searchParams.get("candidateLimit") ?? "");
@@ -803,6 +847,12 @@ async function requestHandler(req, res) {
         enhancedHistoryMatch[2],
         requestUrl.searchParams,
       );
+      return;
+    }
+
+    if (matchParseTransactions(pathname)) {
+      assertAllowedMethod(req.method ?? "GET", new Set(["POST"]), pathname);
+      await handleParseTransactions(req, res);
       return;
     }
 

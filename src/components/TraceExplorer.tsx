@@ -7,7 +7,8 @@ import { TraceGraph } from "@/components/TraceGraph";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getIdentity, getBatchSolDomains } from "@/api";
 import type { WalletIdentity } from "@/api";
-import { getTraceAnalysis } from "@/lib/backend-api";
+import { getTraceAnalysis, parseTransactions } from "@/lib/backend-api";
+import type { EnhancedTransaction } from "@/lib/backend-api";
 import {
   TRACE_ALL_ASSETS,
   DEFAULT_TRACE_FLOW_FILTERS,
@@ -23,6 +24,7 @@ import {
   type TraceDirection,
   type TraceFlowFilters,
   type TraceNodeFlows,
+  type TraceTransferEvent,
 } from "@/lib/trace-types";
 import {
   createTraceState,
@@ -246,6 +248,11 @@ export function TraceExplorer({
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [cpSearch, setCpSearch] = useState("");
   const [domainMap, setDomainMap] = useState<Map<string, string>>(new Map());
+  const [panelMode, setPanelMode] = useState<"node" | "edge">("node");
+  const [selectedEdge, setSelectedEdge] = useState<{ source: string; target: string } | null>(null);
+  const [enhancedTxns, setEnhancedTxns] = useState<Map<string, EnhancedTransaction>>(new Map());
+  const [enhancedLoading, setEnhancedLoading] = useState(false);
+  const [flowsVersion, setFlowsVersion] = useState(0);
 
   const fetchedFlowsRef = useRef<Map<string, TraceNodeFlows>>(new Map());
   const quickScannedRef = useRef<Set<string>>(new Set());
@@ -300,6 +307,7 @@ export function TraceExplorer({
     const request = getTraceAnalysis(address, undefined, opts)
       .then((data) => {
         fetchedFlowsRef.current.set(address, data);
+        setFlowsVersion((v) => v + 1);
         publishFlowUpdate(address, data);
 
         // If metadata is still pending, poll until enriched
@@ -311,6 +319,7 @@ export function TraceExplorer({
               try {
                 const enriched = await getTraceAnalysis(address, undefined, opts);
                 fetchedFlowsRef.current.set(address, enriched);
+                setFlowsVersion((v) => v + 1);
                 publishFlowUpdate(address, enriched);
                 if (enriched.metadataPending && attempt < 6) poll(attempt + 1);
               } catch (err) {
@@ -353,6 +362,8 @@ export function TraceExplorer({
     setPanelData(null);
     setPanelError(null);
     setCollapsed({ outflow: false, inflow: true });
+    setPanelMode("node");
+    setSelectedEdge(null);
     fetchedFlowsRef.current = new Map();
     inflightFlowsRef.current = new Map();
   }, [clearPanelSubscription]);
@@ -379,6 +390,8 @@ export function TraceExplorer({
     setPanelData(null);
     setPanelError(null);
     setCollapsed({ outflow: false, inflow: true });
+    setPanelMode("node");
+    setSelectedEdge(null);
     fetchedFlowsRef.current = new Map();
     inflightFlowsRef.current = new Map();
     panelRequestIdRef.current += 1;
@@ -421,6 +434,8 @@ export function TraceExplorer({
       if (rid !== panelRequestIdRef.current) return;
       setPanelData(data);
     });
+    setPanelMode("node");
+    setSelectedEdge(null);
     setSelectedNodeAddr(address);
     setPanelLoading(true);
     setPanelData(null);
@@ -442,6 +457,19 @@ export function TraceExplorer({
       if (rid === panelRequestIdRef.current) setPanelLoading(false);
     }
   }, [clearPanelSubscription, fetchFlows, subscribeFlowUpdates, seedAddress]);
+
+  const handleEdgeClick = useCallback((source: string, target: string) => {
+    clearPanelSubscription();
+    panelRequestIdRef.current += 1;
+    setPanelMode("edge");
+    setSelectedEdge({ source, target });
+    setEnhancedTxns(new Map());
+    setEnhancedLoading(false);
+    setSelectedNodeAddr(null);
+    setPanelData(null);
+    setPanelLoading(false);
+    setPanelError(null);
+  }, [clearPanelSubscription]);
 
   const handleFullScan = useCallback(async (address: string) => {
     const rid = ++panelRequestIdRef.current;
@@ -637,6 +665,46 @@ export function TraceExplorer({
     + (flowFilters.dateTo !== "" ? 1 : 0)
     + (flowFilters.assetId !== TRACE_ALL_ASSETS ? 1 : 0);
 
+  const selectedEdgeId = selectedEdge ? `${selectedEdge.source}:${selectedEdge.target}` : null;
+
+  const edgeTransactions = useMemo((): TraceTransferEvent[] | null => {
+    if (!selectedEdge) return null;
+    const { source, target } = selectedEdge;
+    const sourceFlows = fetchedFlowsRef.current.get(source);
+    if (sourceFlows) {
+      const events = sourceFlows.events.filter((e) => e.counterparty === target);
+      if (events.length > 0) return events.sort((a, b) => b.timestamp - a.timestamp);
+    }
+    const targetFlows = fetchedFlowsRef.current.get(target);
+    if (targetFlows) {
+      const events = targetFlows.events.filter((e) => e.counterparty === source);
+      if (events.length > 0) return events.sort((a, b) => b.timestamp - a.timestamp);
+    }
+    return null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEdge, flowsVersion]);
+
+  useEffect(() => {
+    if (!edgeTransactions || edgeTransactions.length === 0) return;
+    const sigs = [...new Set(edgeTransactions.map((e) => e.signature))];
+    // Skip if all already cached
+    if (sigs.every((s) => enhancedTxns.has(s))) return;
+    let cancelled = false;
+    setEnhancedLoading(true);
+    parseTransactions(sigs).then((result) => {
+      if (cancelled) return;
+      setEnhancedTxns((prev) => {
+        const next = new Map(prev);
+        for (const tx of result.transactions) next.set(tx.signature, tx);
+        return next;
+      });
+    }).catch(() => {}).finally(() => {
+      if (!cancelled) setEnhancedLoading(false);
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edgeTransactions]);
+
   if (!seedAddress && !loading) {
     return (
       <ExplorerLanding
@@ -730,19 +798,145 @@ export function TraceExplorer({
             edges={edges}
             loading={loading}
             selectedNodeAddr={selectedNodeAddr}
+            selectedEdgeId={selectedEdgeId}
             onNodeClick={handleNodeClick}
+            onEdgeClick={handleEdgeClick}
             onNavigateToWallet={onNavigateToWallet}
           />
         </div>
 
-        {selectedNodeAddr && (
+        {(selectedNodeAddr || selectedEdge) && (
           <div className="w-[460px] flex-none border-l border-border overflow-hidden flex flex-col bg-card">
+            {panelMode === "edge" && selectedEdge ? (() => {
+              const sourceLabel = traceState?.nodeMap.get(selectedEdge.source)?.label
+                ?? domainMap.get(selectedEdge.source)
+                ?? truncAddr(selectedEdge.source);
+              const targetLabel = traceState?.nodeMap.get(selectedEdge.target)?.label
+                ?? domainMap.get(selectedEdge.target)
+                ?? truncAddr(selectedEdge.target);
+              return (
+                <>
+                  <div className="flex-none border-b border-border px-3 py-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-mono text-[10px] text-muted-foreground">Transactions between</div>
+                        <div className="font-mono text-[11px] font-bold text-primary truncate">
+                          {sourceLabel} <span className="text-muted-foreground">→</span> {targetLabel}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => { setSelectedEdge(null); setPanelMode("node"); }}
+                        className="font-mono text-[10px] text-muted-foreground hover:text-primary cursor-pointer px-1"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  {edgeTransactions ? (
+                    edgeTransactions.length === 0 ? (
+                      <div className="flex-1 flex items-center justify-center px-4 text-center">
+                        <span className="font-mono text-[10px] text-muted-foreground">No transactions found</span>
+                      </div>
+                    ) : (
+                      <div className="flex-1 overflow-y-auto min-h-0">
+                        <div className="flex-none border-b border-border/40 px-3 py-1.5 flex items-center justify-between">
+                          <span className="font-mono text-[10px] text-foreground/80">{edgeTransactions.length} transactions</span>
+                          {enhancedLoading && (
+                            <span className="scanning-text font-mono text-[8px] uppercase tracking-widest text-primary/70">Parsing...</span>
+                          )}
+                        </div>
+                        <Table>
+                          <TableHeader className="sticky top-0 z-10 bg-card">
+                            <TableRow className="border-border/40">
+                              <TableHead className={`${TH} h-6 px-3`}>Tx</TableHead>
+                              <TableHead className={`${TH} h-6`}>Time</TableHead>
+                              <TableHead className={`${TH} h-6 text-center`}>Dir</TableHead>
+                              <TableHead className={`${TH} h-6`}>Asset</TableHead>
+                              <TableHead className={`${TH} h-6 text-right pr-3`}>Amount</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {edgeTransactions.map((evt, i) => {
+                              const enhanced = enhancedTxns.get(evt.signature);
+                              return (
+                                <TableRow key={`${evt.signature}-${i}`} className="border-border/20">
+                                  <TableCell className="px-3 py-1.5">
+                                    <a
+                                      href={`https://orb.am/tx/${evt.signature}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="font-mono text-[9px] text-primary/80 hover:text-primary underline underline-offset-2"
+                                    >
+                                      {evt.signature.slice(0, 8)}
+                                    </a>
+                                    {enhanced?.type && (
+                                      <div className="font-mono text-[8px] text-muted-foreground/60 mt-0.5">{enhanced.type}</div>
+                                    )}
+                                    {enhanced?.description && (
+                                      <div className="font-mono text-[8px] text-foreground/50 mt-0.5 leading-tight max-w-[140px] truncate" title={enhanced.description}>
+                                        {enhanced.description}
+                                      </div>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="py-1.5">
+                                    <span className="font-mono text-[9px] text-muted-foreground">{formatCompactDate(evt.timestamp)}</span>
+                                  </TableCell>
+                                  <TableCell className="py-1.5 text-center">
+                                    <span
+                                      className="font-mono text-[9px] font-bold"
+                                      style={{ color: evt.direction === "outflow" ? "#ffb800" : "#00d4ff" }}
+                                    >
+                                      {evt.direction === "outflow" ? "→" : "←"}
+                                    </span>
+                                  </TableCell>
+                                  <TableCell className="py-1.5">
+                                    <span className="font-mono text-[9px] text-muted-foreground">
+                                      {evt.symbol ?? (evt.kind === "native" ? "SOL" : evt.mint ? truncAddr(evt.mint) : "")}
+                                    </span>
+                                  </TableCell>
+                                  <TableCell className="py-1.5 text-right pr-3">
+                                    <span className="font-mono text-[9px] text-foreground/80">{fmtCompact(evt.uiAmount)}</span>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center px-4 text-center">
+                      <div className="space-y-2">
+                        <span className="font-mono text-[10px] text-muted-foreground block">
+                          Inspect one of these addresses first to load transactions
+                        </span>
+                        <div className="flex flex-col gap-1">
+                          <button
+                            onClick={() => handleNodeClick(selectedEdge.source)}
+                            className="font-mono text-[9px] text-primary/80 hover:text-primary cursor-pointer underline underline-offset-2"
+                          >
+                            {sourceLabel}
+                          </button>
+                          <button
+                            onClick={() => handleNodeClick(selectedEdge.target)}
+                            className="font-mono text-[9px] text-primary/80 hover:text-primary cursor-pointer underline underline-offset-2"
+                          >
+                            {targetLabel}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })() : (
+            <>
             <div className="flex-none border-b border-border px-3 py-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="font-mono text-[10px] text-muted-foreground">Flows of</div>
                   <div className="font-mono text-[11px] font-bold text-primary truncate">
-                    {selectedNodeLabel ?? truncAddr(selectedNodeAddr)}
+                    {selectedNodeLabel ?? truncAddr(selectedNodeAddr!)}
                   </div>
                 </div>
                 <button
@@ -759,7 +953,7 @@ export function TraceExplorer({
                   ✕
                 </button>
               </div>
-              {selectedNodeAddr !== traceState?.seedAddress && graphAddresses.has(selectedNodeAddr) && (
+              {selectedNodeAddr !== traceState?.seedAddress && selectedNodeAddr && graphAddresses.has(selectedNodeAddr) && (
                 <button
                   onClick={() => handleRemoveNode(selectedNodeAddr)}
                   className="mt-1.5 font-mono text-[9px] text-destructive/70 hover:text-destructive cursor-pointer"
@@ -933,8 +1127,8 @@ export function TraceExplorer({
                       direction="outflow"
                       selectedAddress={selectedAddress}
                       graphEdges={graphEdges}
-                      onAddAll={() => handleAddAll(selectedNodeAddr, outflowNotAdded.slice(0, 20), "outflow")}
-                      onAddOne={(cp) => handleAddCp(selectedNodeAddr, cp, "outflow")}
+                      onAddAll={() => handleAddAll(selectedNodeAddr!, outflowNotAdded.slice(0, 20), "outflow")}
+                      onAddOne={(cp) => handleAddCp(selectedNodeAddr!, cp, "outflow")}
                       domainMap={domainMap}
                       searchQuery={cpSearch}
                     />
@@ -949,14 +1143,16 @@ export function TraceExplorer({
                       direction="inflow"
                       selectedAddress={selectedAddress}
                       graphEdges={graphEdges}
-                      onAddAll={() => handleAddAll(selectedNodeAddr, inflowNotAdded.slice(0, 20), "inflow")}
-                      onAddOne={(cp) => handleAddCp(selectedNodeAddr, cp, "inflow")}
+                      onAddAll={() => handleAddAll(selectedNodeAddr!, inflowNotAdded.slice(0, 20), "inflow")}
+                      onAddOne={(cp) => handleAddCp(selectedNodeAddr!, cp, "inflow")}
                       domainMap={domainMap}
                       searchQuery={cpSearch}
                     />
                   </div>
                 )}
               </>
+            )}
+            </>
             )}
           </div>
         )}

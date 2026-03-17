@@ -289,11 +289,17 @@ function createAbortSignal(options: FetchJsonOptions = {}): {
   };
 }
 
-async function fetchJson<T>(path: string, options?: FetchJsonOptions): Promise<T> {
+async function fetchJson<T>(path: string, options?: FetchJsonOptions & { method?: string; body?: string }): Promise<T> {
   const { signal, cleanup } = createAbortSignal(options);
 
   try {
-    const res = await fetch(`${API_BASE_URL}${path}`, { signal });
+    const init: RequestInit = { signal };
+    if (options?.method) init.method = options.method;
+    if (options?.body) {
+      init.body = options.body;
+      init.headers = { "content-type": "application/json" };
+    }
+    const res = await fetch(`${API_BASE_URL}${path}`, init);
     const text = await res.text();
     if (!res.ok) {
       let message = `Request failed (${res.status})`;
@@ -534,4 +540,27 @@ export function getTokenForensics(
   return fetchJson<TokenForensicsReport>(
     `/tokens/${mint}/forensics${query ? `?${query}` : ""}`,
   );
+}
+
+export interface EnhancedTransaction {
+  signature: string;
+  type?: string;
+  description?: string;
+  source?: string;
+  timestamp?: number;
+  fee?: number;
+  feePayer?: string;
+  nativeTransfers?: Array<{ fromUserAccount: string; toUserAccount: string; amount: number }>;
+  tokenTransfers?: Array<{ fromUserAccount: string; toUserAccount: string; mint: string; tokenAmount: number; tokenStandard?: string }>;
+}
+
+export interface ParseTransactionsResult {
+  transactions: EnhancedTransaction[];
+}
+
+export function parseTransactions(signatures: string[]): Promise<ParseTransactionsResult> {
+  return fetchJson<ParseTransactionsResult>("/transactions/parse", {
+    method: "POST",
+    body: JSON.stringify({ signatures }),
+  });
 }

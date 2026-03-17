@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useMemo, memo } from "react";
+import { useCallback, useRef, useState, useEffect, useMemo, memo } from "react";
 import {
   ReactFlow,
   type Node,
@@ -116,6 +116,7 @@ interface TraceEdgeData {
   firstSeen: number;
   lastSeen: number;
   weight: number;
+  selected?: boolean;
   [key: string]: unknown;
 }
 
@@ -132,9 +133,16 @@ const EDGE_LABEL_STYLE: React.CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: 9,
   color: "#c8d6e5",
-  whiteSpace: "nowrap",
   textAlign: "left",
   lineHeight: "15px",
+  width: "max-content",
+  maxWidth: 220,
+};
+
+const EDGE_ROW_STYLE: React.CSSProperties = {
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
 };
 
 const TraceEdge = memo(function TraceEdge({
@@ -148,6 +156,7 @@ const TraceEdge = memo(function TraceEdge({
 }: EdgeProps<Edge<TraceEdgeData>>) {
   const d = data as TraceEdgeData;
   const strokeWidth = 1.5 + (d.weight ?? 0) * 4.5;
+  const hitAreaRef = useRef<SVGPathElement>(null);
 
   const [path, labelX, labelY] = getBezierPath({
     sourceX, sourceY, targetX, targetY,
@@ -168,22 +177,28 @@ const TraceEdge = memo(function TraceEdge({
     + (remainingCount > 0 ? ` +${remainingCount}` : "");
   const dateLine = formatEdgeDate(d.lastSeen);
 
+  const handleLabelClick = useCallback((e: React.MouseEvent) => {
+    // Dispatch a synthetic click on the SVG hit-area path so ReactFlow's onEdgeClick fires
+    hitAreaRef.current?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: e.clientX, clientY: e.clientY }));
+  }, []);
+
   return (
     <g>
-      <path d={path} fill="none" stroke="transparent" strokeWidth={16} pointerEvents="all" style={{ cursor: "default" }} />
-      <path d={path} fill="none" stroke="#3a4a5a" strokeWidth={strokeWidth} pointerEvents="none" />
+      <path ref={hitAreaRef} d={path} fill="none" stroke="transparent" strokeWidth={16} pointerEvents="all" style={{ cursor: "pointer" }} />
+      <path d={path} fill="none" stroke={d.selected ? "#00d4ff" : "#3a4a5a"} strokeWidth={strokeWidth} pointerEvents="none" />
       <foreignObject
         x={labelX - 110}
         y={labelY - 38}
         width={220}
         height={80}
-        style={{ overflow: "visible", pointerEvents: "none" }}
+        style={{ overflow: "visible", pointerEvents: "all", cursor: "pointer" }}
       >
-        <div style={EDGE_LABEL_STYLE}>
-          <div><span style={{ color: "#6b7b8d" }}>Total (SOL): </span><span style={{ color: "#ffb800" }}>{solLine}</span></div>
-          {tokens.length > 0 && <div><span style={{ color: "#6b7b8d" }}>Tokens: </span><span style={{ color: "#c8d6e5" }}>{tokenLine}</span></div>}
-          <div><span style={{ color: "#6b7b8d" }}>Transactions: </span><span style={{ color: "#c8d6e5" }}>{d.txCount}</span></div>
-          {dateLine && <div><span style={{ color: "#6b7b8d" }}>Last seen: </span><span style={{ color: "#c8d6e5" }}>{dateLine}</span></div>}
+        {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+        <div style={{ ...EDGE_LABEL_STYLE, cursor: "pointer" }} onClick={handleLabelClick}>
+          <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>Total (SOL): </span><span style={{ color: "#ffb800" }}>{solLine}</span></div>
+          {tokens.length > 0 && <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>Tokens: </span><span style={{ color: "#c8d6e5" }}>{tokenLine}</span></div>}
+          <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>Transactions: </span><span style={{ color: "#c8d6e5" }}>{d.txCount}</span></div>
+          {dateLine && <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>Last seen: </span><span style={{ color: "#c8d6e5" }}>{dateLine}</span></div>}
         </div>
       </foreignObject>
     </g>
@@ -205,7 +220,9 @@ interface TraceGraphProps {
   edges: Edge[];
   loading: boolean;
   selectedNodeAddr: string | null;
+  selectedEdgeId: string | null;
   onNodeClick: (address: string) => void;
+  onEdgeClick: (source: string, target: string) => void;
   onNavigateToWallet?: (address: string) => void;
 }
 
@@ -214,7 +231,9 @@ export function TraceGraph({
   edges: propEdges,
   loading,
   selectedNodeAddr,
+  selectedEdgeId,
   onNodeClick,
+  onEdgeClick,
   onNavigateToWallet,
 }: TraceGraphProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState(propNodes);
@@ -235,7 +254,12 @@ export function TraceGraph({
     });
   }, [propNodes, setNodes, selectedNodeAddr]);
 
-  useEffect(() => { setEdges(propEdges); }, [propEdges, setEdges]);
+  useEffect(() => {
+    setEdges(propEdges.map((e) => ({
+      ...e,
+      data: { ...e.data, selected: selectedEdgeId === `${e.source}:${e.target}` },
+    })));
+  }, [propEdges, setEdges, selectedEdgeId]);
 
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -243,6 +267,14 @@ export function TraceGraph({
       onNodeClick(node.id);
     },
     [onNodeClick],
+  );
+
+  const handleEdgeClick = useCallback(
+    (_: React.MouseEvent, edge: Edge) => {
+      setContextMenu(null);
+      onEdgeClick(edge.source, edge.target);
+    },
+    [onEdgeClick],
   );
 
   const handleNodeContextMenu = useCallback(
@@ -298,6 +330,7 @@ export function TraceGraph({
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onNodeClick={handleNodeClick}
+        onEdgeClick={handleEdgeClick}
         onNodeContextMenu={handleNodeContextMenu}
         onPaneClick={handlePaneClick}
         fitView
