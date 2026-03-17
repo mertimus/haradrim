@@ -317,9 +317,16 @@ export function getWalletAnalysis(
 export function getTraceAnalysis(
   address: string,
   range?: { start?: number | null; end?: number | null },
+  options?: { limit?: number },
 ): Promise<TraceNodeFlows> {
+  const params = new URLSearchParams();
+  if (range?.start != null) params.set("start", String(range.start));
+  if (range?.end != null) params.set("end", String(range.end));
+  if (options?.limit != null) params.set("limit", String(options.limit));
+  const query = params.toString();
   return fetchJson<TraceNodeFlows>(
-    `/traces/${address}/flows${buildQuery(range)}`,
+    `/traces/${address}/flows${query ? `?${query}` : ""}`,
+    { timeoutMs: 120_000 },
   );
 }
 

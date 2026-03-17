@@ -512,10 +512,11 @@ export async function getTokenMetadataBatch(mints) {
         if (!asset?.id) continue;
         const content = asset.content?.metadata;
         const links = asset.content?.links;
+        const tokenInfo = asset.token_info;
         map.set(asset.id, {
-          name: content?.name,
-          symbol: content?.symbol,
-          logoUri: links?.image ?? asset.content?.json_uri,
+          name: content?.name ?? undefined,
+          symbol: content?.symbol ?? tokenInfo?.symbol ?? undefined,
+          logoUri: links?.image ?? asset.content?.json_uri ?? undefined,
         });
       }
     }

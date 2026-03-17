@@ -1,27 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, RefreshCcw } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { AssetBalanceChart } from "@/components/AssetBalanceChart";
 import { SearchBar } from "@/components/SearchBar";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   getWalletAssetBalanceHistory,
+  type AssetBalanceHistoryPoint,
   type WalletAssetBalanceHistory,
   type WalletAssetBalanceHistoryResult,
 } from "@/lib/backend-api";
+
+type ViewMode = "raw" | "usd";
+type SolPriceMap = Record<string, number>;
+
+const NATIVE_SOL_ID = "native-sol";
 
 interface RunState {
   result: WalletAssetBalanceHistoryResult | null;
@@ -33,256 +24,132 @@ interface BalanceExplorerProps {
   initialAddress?: string;
 }
 
-const ASSET_COLORS = ["#00d4ff", "#ffb800", "#7cc6fe", "#ffd966", "#94a3b8", "#4a9eff"];
-
 function getBalanceAddressFromUrl(pathname = window.location.pathname): string {
   const match = pathname.match(/^\/balances\/([A-Za-z0-9]+)$/);
   return match?.[1] ?? "";
 }
 
 function createEmptyRunState(): RunState {
-  return {
-    result: null,
-    loading: false,
-    error: null,
-  };
+  return { result: null, loading: false, error: null };
 }
 
 function createLoadingRunState(): RunState {
-  return {
-    result: null,
-    loading: true,
-    error: null,
-  };
+  return { result: null, loading: true, error: null };
 }
 
-function truncAssetId(value: string): string {
+function truncAddress(value: string): string {
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
-function formatAssetAmount(value: number, asset: Pick<WalletAssetBalanceHistory, "symbol" | "decimals">): string {
-  const safeDecimals = Math.max(0, Math.min(asset.decimals, 9));
-  const formatted = Math.abs(value) >= 1_000
-    ? value.toLocaleString(undefined, { maximumFractionDigits: 0 })
-    : Math.abs(value) >= 1
-      ? value.toLocaleString(undefined, {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: Math.min(4, safeDecimals),
-      })
-      : value.toLocaleString(undefined, {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: Math.min(6, Math.max(safeDecimals, 2)),
-      });
-
-  return asset.symbol ? `${formatted} ${asset.symbol}` : formatted;
+function formatCompact(value: number, fractionDigits = 2): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toLocaleString(undefined, { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits })}B`;
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toLocaleString(undefined, { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits })}M`;
+  if (abs >= 1_000) return `${(value / 1_000).toLocaleString(undefined, { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits })}K`;
+  return value.toLocaleString(undefined, { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits });
 }
 
-function formatSignedAssetAmount(value: number, asset: Pick<WalletAssetBalanceHistory, "symbol" | "decimals">): string {
-  const magnitude = formatAssetAmount(Math.abs(value), asset);
-  if (value === 0) return magnitude;
-  return `${value > 0 ? "+" : "-"}${magnitude}`;
+function formatHeroBalance(value: number, isUsd: boolean): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return formatCompact(value, 2);
+  if (isUsd || abs >= 1) return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
-function formatShortDate(timestamp: number | null): string {
-  if (!timestamp) return "Unknown";
-  return new Date(timestamp * 1000).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+function formatDropdownBalance(value: number, decimals: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return formatCompact(value, 1);
+  if (abs >= 1_000_000) return formatCompact(value, 1);
+  const d = Math.max(0, Math.min(Number.isFinite(decimals) ? decimals : 0, 9));
+  const maxFrac = abs >= 1_000 ? 2 : abs >= 1 ? Math.max(2, Math.min(4, d)) : Math.min(6, Math.max(d, 2));
+  const minFrac = Math.min(abs >= 1 ? 2 : 0, maxFrac);
+  return value.toLocaleString(undefined, { minimumFractionDigits: minFrac, maximumFractionDigits: maxFrac });
 }
 
-function formatDateRange(asset: WalletAssetBalanceHistory): string {
-  if (!asset.firstTimestamp || !asset.lastTimestamp) return "No dated transactions";
-  if (asset.firstTimestamp === asset.lastTimestamp) return formatShortDate(asset.firstTimestamp);
-  return `${formatShortDate(asset.firstTimestamp)} - ${formatShortDate(asset.lastTimestamp)}`;
+function formatSignedHero(value: number, isUsd: boolean): string {
+  const abs = Math.abs(value);
+  const formatted = abs >= 1_000_000
+    ? formatCompact(abs, 2)
+    : abs >= 1_000
+      ? abs.toLocaleString(undefined, { maximumFractionDigits: 2 })
+      : abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const prefix = isUsd ? "$" : "";
+  if (value === 0) return `${prefix}${formatted}`;
+  return `${value > 0 ? "+" : "\u2212"}${prefix}${formatted}`;
+}
+
+function formatDateRangeShort(asset: WalletAssetBalanceHistory): string {
+  if (!asset.firstTimestamp || !asset.lastTimestamp) return "";
+  const fmt = (ts: number) =>
+    new Date(ts * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short" });
+  if (asset.firstTimestamp === asset.lastTimestamp) return fmt(asset.firstTimestamp);
+  return `${fmt(asset.firstTimestamp)} \u2013 ${fmt(asset.lastTimestamp)}`;
 }
 
 function assetLabel(asset: WalletAssetBalanceHistory): string {
-  return asset.symbol ?? asset.name ?? (asset.kind === "native" ? "SOL" : truncAssetId(asset.mint ?? asset.assetId));
+  return asset.symbol ?? asset.name ?? (asset.kind === "native" ? "SOL" : truncAddress(asset.mint ?? asset.assetId));
 }
 
-function assetSubtitle(asset: WalletAssetBalanceHistory): string {
-  if (asset.kind === "native") return "Native SOL";
-  if (asset.name && asset.symbol && asset.name !== asset.symbol) {
-    return `${asset.name} · ${truncAssetId(asset.mint ?? asset.assetId)}`;
-  }
-  if (asset.name) return `${asset.name}`;
-  return truncAssetId(asset.mint ?? asset.assetId);
-}
-
-function assetColor(assetId: string): string {
-  let hash = 0;
-  for (let index = 0; index < assetId.length; index += 1) {
-    hash = (hash * 31 + assetId.charCodeAt(index)) >>> 0;
-  }
-  return ASSET_COLORS[hash % ASSET_COLORS.length];
-}
-
-function compareTableAssets(a: WalletAssetBalanceHistory, b: WalletAssetBalanceHistory): number {
+function compareAssets(a: WalletAssetBalanceHistory, b: WalletAssetBalanceHistory): number {
+  if (a.kind !== b.kind) return a.kind === "native" ? -1 : 1;
   if (a.currentlyHeld !== b.currentlyHeld) return Number(b.currentlyHeld) - Number(a.currentlyHeld);
   if (a.currentBalance !== b.currentBalance) return b.currentBalance - a.currentBalance;
-  if (a.pointCount !== b.pointCount) return b.pointCount - a.pointCount;
   return assetLabel(a).localeCompare(assetLabel(b));
 }
 
-function SummaryMetric({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-border/80 bg-background/60 px-4 py-3">
-      <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-        {label}
-      </div>
-      <div className="mt-2 font-mono text-2xl text-foreground">{value}</div>
-      <div className="mt-1 font-mono text-[11px] text-muted-foreground">{detail}</div>
-    </div>
-  );
+function lookupSolPrice(prices: SolPriceMap, timestamp: number): number {
+  const d = new Date(timestamp * 1000);
+  for (let i = 0; i < 7; i++) {
+    const key = d.toISOString().split("T")[0];
+    if (prices[key] != null) return prices[key];
+    d.setDate(d.getDate() - 1);
+  }
+  return 0;
 }
 
-function HoldingStatusPill({ asset }: { asset: WalletAssetBalanceHistory }) {
-  return (
-    <div className={`inline-flex rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.2em] ${
-      asset.currentlyHeld
-        ? "border-primary/20 bg-primary/8 text-primary"
-        : "border-border/80 bg-background/70 text-muted-foreground"
-    }`}
-    >
-      {asset.currentlyHeld ? "Current" : "Former"}
-    </div>
-  );
-}
+let priceCache: SolPriceMap | null = null;
+let priceFetchPromise: Promise<SolPriceMap | null> | null = null;
 
-function SolHeroCard({
-  asset,
-}: {
-  asset: WalletAssetBalanceHistory;
-}) {
-  return (
-    <Card className="border-border/90 bg-card/70 py-5">
-      <CardContent className="px-4 pt-0">
-        <div className="grid gap-3 md:grid-cols-4">
-          <SummaryMetric
-            label="Current Balance"
-            value={formatAssetAmount(asset.currentBalance, asset)}
-            detail="Present wallet SOL balance"
-          />
-          <SummaryMetric
-            label="Net Change"
-            value={formatSignedAssetAmount(asset.netChange, asset)}
-            detail={`Started at ${formatAssetAmount(asset.startingBalance, asset)}`}
-          />
-          <SummaryMetric
-            label="Observed Range"
-            value={`${formatAssetAmount(asset.minBalance, asset)} - ${formatAssetAmount(asset.maxBalance, asset)}`}
-            detail={asset.downsampled ? "Downsampled chart output" : "Full returned history"}
-          />
-          <SummaryMetric
-            label="Activity"
-            value={asset.pointCount.toLocaleString()}
-            detail={formatDateRange(asset)}
-          />
-        </div>
-
-        <div className="mt-4">
-          <AssetBalanceChart
-            points={asset.points}
-            label="SOL"
-            decimals={asset.decimals}
-            strokeColor={assetColor(asset.assetId)}
-            ariaLabel="SOL balance history chart"
-          />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function HoldingsTable({ assets }: { assets: WalletAssetBalanceHistory[] }) {
-  if (assets.length === 0) return null;
-
-  return (
-    <Card className="border-border/90 bg-card/70 py-4">
-      <CardHeader className="gap-2 px-4 pb-0">
-        <CardDescription className="font-mono text-[10px] uppercase tracking-[0.24em] text-primary/80">
-          Holdings Table
-        </CardDescription>
-        <CardTitle className="font-mono text-xl text-foreground">
-          Token holdings and former positions
-        </CardTitle>
-        <p className="font-mono text-[11px] text-muted-foreground">
-          Current tokens stay above former tokens. SOL is excluded and remains the hero chart.
-        </p>
-      </CardHeader>
-
-      <CardContent className="px-4 pt-0">
-        <Table>
-          <TableHeader className="sticky top-0 z-10 bg-background">
-            <TableRow className="border-border hover:bg-transparent [&>th]:px-2 [&>th]:py-1.5">
-              <TableHead className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Asset</TableHead>
-              <TableHead className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Status</TableHead>
-              <TableHead className="text-right font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Current</TableHead>
-              <TableHead className="text-right font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Net</TableHead>
-              <TableHead className="text-right font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Range</TableHead>
-              <TableHead className="text-right font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Activity</TableHead>
-              <TableHead className="text-right font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Last Seen</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {assets.map((asset) => (
-              <TableRow
-                key={asset.assetId}
-                className="table-row-reveal border-border [&>td]:px-2 [&>td]:py-2"
-              >
-                <TableCell>
-                  <div className="flex flex-col gap-1">
-                    <div className="font-mono text-[11px] text-foreground">{assetLabel(asset)}</div>
-                    <div className="font-mono text-[10px] text-muted-foreground">{assetSubtitle(asset)}</div>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <HoldingStatusPill asset={asset} />
-                </TableCell>
-                <TableCell className="text-right font-mono text-[11px] text-foreground tabular-nums">
-                  {formatAssetAmount(asset.currentBalance, asset)}
-                </TableCell>
-                <TableCell className={`text-right font-mono text-[11px] tabular-nums ${
-                  asset.netChange < 0 ? "text-accent/90" : "text-primary"
-                }`}
-                >
-                  {formatSignedAssetAmount(asset.netChange, asset)}
-                </TableCell>
-                <TableCell className="text-right font-mono text-[11px] text-muted-foreground tabular-nums">
-                  {formatAssetAmount(asset.minBalance, asset)} - {formatAssetAmount(asset.maxBalance, asset)}
-                </TableCell>
-                <TableCell className="text-right font-mono text-[11px] text-foreground tabular-nums">
-                  {asset.pointCount.toLocaleString()}
-                </TableCell>
-                <TableCell className="text-right font-mono text-[10px] text-muted-foreground tabular-nums">
-                  {formatShortDate(asset.lastTimestamp)}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
-  );
+function fetchSolPrices(): Promise<SolPriceMap | null> {
+  if (priceCache) return Promise.resolve(priceCache);
+  if (priceFetchPromise) return priceFetchPromise;
+  priceFetchPromise = fetch("/data/sol-daily-usd.json")
+    .then((res) => (res.ok ? res.json() as Promise<SolPriceMap> : null))
+    .then((data) => { priceCache = data; return data; })
+    .catch(() => null);
+  return priceFetchPromise;
 }
 
 export function BalanceExplorer({ initialAddress }: BalanceExplorerProps) {
   const [inputValue, setInputValue] = useState(initialAddress ?? "");
   const [activeAddress, setActiveAddress] = useState(initialAddress ?? "");
   const [run, setRun] = useState<RunState>(createEmptyRunState);
+  const [hoverBalance, setHoverBalance] = useState<number | null>(null);
+  const [selectedAssetId, setSelectedAssetId] = useState(NATIVE_SOL_ID);
+  const [viewMode, setViewMode] = useState<ViewMode>("raw");
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [solPrices, setSolPrices] = useState<SolPriceMap | null>(priceCache);
   const requestIdRef = useRef(0);
   const initialAddressRef = useRef(initialAddress ?? "");
   const abortControllerRef = useRef<AbortController | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (solPrices) return;
+    void fetchSolPrices().then((data) => { if (data) setSolPrices(data); });
+  }, [solPrices]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [dropdownOpen]);
 
   const abortPendingRequest = useCallback(() => {
     abortControllerRef.current?.abort();
@@ -295,6 +162,9 @@ export function BalanceExplorer({ initialAddress }: BalanceExplorerProps) {
     setInputValue("");
     setActiveAddress("");
     setRun(createEmptyRunState());
+    setHoverBalance(null);
+    setSelectedAssetId(NATIVE_SOL_ID);
+    setViewMode("raw");
     window.history[replaceUrl ? "replaceState" : "pushState"]({}, "", "/balances");
   }, [abortPendingRequest]);
 
@@ -307,20 +177,17 @@ export function BalanceExplorer({ initialAddress }: BalanceExplorerProps) {
     setInputValue(address);
     setActiveAddress(address);
     setRun(createLoadingRunState());
+    setHoverBalance(null);
+    setSelectedAssetId(NATIVE_SOL_ID);
+    setViewMode("raw");
     window.history[replaceUrl ? "replaceState" : "pushState"]({}, "", `/balances/${address}`);
 
     try {
       const result = await getWalletAssetBalanceHistory(address, { signal: controller.signal });
       if (requestId !== requestIdRef.current) return;
-
-      setRun({
-        result,
-        loading: false,
-        error: null,
-      });
+      setRun({ result, loading: false, error: null });
     } catch (err) {
       if (requestId !== requestIdRef.current || controller.signal.aborted) return;
-
       setRun({
         result: null,
         loading: false,
@@ -341,14 +208,9 @@ export function BalanceExplorer({ initialAddress }: BalanceExplorerProps) {
   useEffect(() => {
     function handlePopState() {
       const nextAddress = getBalanceAddressFromUrl();
-      if (!nextAddress) {
-        clearState(true);
-        return;
-      }
-
+      if (!nextAddress) { clearState(true); return; }
       void loadHistory(nextAddress, true);
     }
-
     window.addEventListener("popstate", handlePopState);
     return () => {
       window.removeEventListener("popstate", handlePopState);
@@ -356,174 +218,239 @@ export function BalanceExplorer({ initialAddress }: BalanceExplorerProps) {
     };
   }, [abortPendingRequest, clearState, loadHistory]);
 
-  const solAsset = run.result?.assets.find((asset) => asset.kind === "native") ?? null;
-  const tableAssets = useMemo(
-    () => (run.result?.assets ?? [])
-      .filter((asset) => asset.kind !== "native")
-      .slice()
-      .sort(compareTableAssets),
+  // All assets sorted: SOL first, then by balance
+  const sortedAssets = useMemo(
+    () => (run.result?.assets ?? []).slice().sort(compareAssets),
     [run.result],
   );
-  const currentTokenCount = tableAssets.filter((asset) => asset.currentlyHeld).length;
-  const formerTokenCount = tableAssets.length - currentTokenCount;
 
-  const benchmarkDetail = useMemo(() => {
-    if (!run.result) return null;
-    return {
-      assetCount: tableAssets.length.toLocaleString(),
-      txCount: run.result.txCount.toLocaleString(),
-      currentAssetCount: currentTokenCount.toLocaleString(),
-      formerAssetCount: formerTokenCount.toLocaleString(),
-    };
-  }, [currentTokenCount, formerTokenCount, run.result, tableAssets.length]);
+  const selectedAsset = sortedAssets.find((a) => a.assetId === selectedAssetId) ?? sortedAssets[0] ?? null;
+  const isSol = selectedAsset?.kind === "native";
+  const isUsd = isSol && viewMode === "usd";
+  const canShowUsd = isSol && solPrices != null;
 
+  // Chart points — raw or USD-converted
+  const effectivePoints = useMemo((): AssetBalanceHistoryPoint[] => {
+    if (!selectedAsset) return [];
+    if (!isUsd || !solPrices) return selectedAsset.points;
+    return selectedAsset.points.map((p) => {
+      const price = lookupSolPrice(solPrices, p.timestamp);
+      return { ...p, balance: p.balance * price, delta: p.delta * price };
+    });
+  }, [selectedAsset, isUsd, solPrices]);
+
+  const currentBalance = useMemo(() => {
+    if (!selectedAsset) return 0;
+    if (!isUsd || !solPrices) return selectedAsset.currentBalance;
+    return selectedAsset.currentBalance * lookupSolPrice(solPrices, selectedAsset.lastTimestamp ?? Math.floor(Date.now() / 1000));
+  }, [selectedAsset, isUsd, solPrices]);
+
+  const netChange = useMemo(() => {
+    if (!selectedAsset) return 0;
+    if (!isUsd || !solPrices) return selectedAsset.netChange;
+    const endUsd = selectedAsset.currentBalance * lookupSolPrice(solPrices, selectedAsset.lastTimestamp ?? Math.floor(Date.now() / 1000));
+    const startUsd = selectedAsset.startingBalance * lookupSolPrice(solPrices, selectedAsset.firstTimestamp ?? 0);
+    return endUsd - startUsd;
+  }, [selectedAsset, isUsd, solPrices]);
+
+  const handleHoverPoint = useCallback((point: AssetBalanceHistoryPoint | null) => {
+    setHoverBalance(point ? point.balance : null);
+  }, []);
+
+  function selectAsset(assetId: string) {
+    setSelectedAssetId(assetId);
+    setDropdownOpen(false);
+    setHoverBalance(null);
+    if (assetId !== NATIVE_SOL_ID) setViewMode("raw");
+  }
+
+  // Landing page
   if (!activeAddress && !run.loading) {
     return (
-      <div className="flex flex-1 overflow-auto">
-        <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6">
-          <section className="corner-bracket relative overflow-hidden rounded-3xl border border-border/90 bg-[radial-gradient(circle_at_top,_rgba(0,212,255,0.06),_transparent_44%),linear-gradient(135deg,rgba(13,19,33,0.98),rgba(9,15,28,0.95))] p-6">
-            <span className="corner-bl" />
-            <span className="corner-br" />
-            <div className="max-w-4xl">
-              <div className="font-mono text-[10px] uppercase tracking-[0.34em] text-primary/80">
-                Asset History
-              </div>
-              <h2 className="mt-3 font-mono text-3xl font-semibold text-foreground">
-                Reconstruct every asset this wallet holds or has ever held.
-              </h2>
-              <p className="mt-3 max-w-3xl font-mono text-sm leading-6 text-muted-foreground">
-                Enter one wallet address and Haradrim reconstructs
-                balance-over-time chart for SOL and every token mint observed in the wallet&apos;s
-                historical balance changes.
-              </p>
-            </div>
-
-            <div className="mt-6 max-w-3xl">
-              <SearchBar
-                onSearch={(address) => loadHistory(address)}
-                loading={run.loading}
-                defaultValue={inputValue}
-                autoFocus
-                enableShortcut
-                submitLabel="Load Asset History"
-                placeholder="PASTE WALLET ADDRESS OR .SOL DOMAIN..."
-              />
-            </div>
-
-            <div className="mt-6 grid gap-3 md:grid-cols-3">
-              <SummaryMetric
-                label="Coverage"
-                value="SOL + Tokens"
-                detail="Native SOL hero chart and token history table"
-              />
-              <SummaryMetric
-                label="History"
-                value="All Assets"
-                detail="SOL hero chart plus token holdings table"
-              />
-              <SummaryMetric
-                label="Layout"
-                value="SOL First"
-                detail="SOL chart on top, holdings table below"
-              />
-            </div>
-          </section>
+      <div className="flex flex-1 flex-col items-center overflow-auto px-4 pt-[10vh]">
+        <div className="w-full max-w-2xl space-y-3 text-center">
+          <h2 className="font-mono text-2xl font-bold uppercase tracking-[0.18em] text-primary text-glow-cyan">
+            SOL & Stablecoin History
+          </h2>
+          <p className="font-mono text-[11px] leading-5 text-muted-foreground">
+            Paste a wallet address to reconstruct SOL and stablecoin balance over time.
+          </p>
+          <div className="pt-2">
+            <SearchBar
+              onSearch={(address) => loadHistory(address)}
+              loading={run.loading}
+              defaultValue={inputValue}
+              autoFocus
+              enableShortcut
+              submitLabel="Load"
+              placeholder="WALLET ADDRESS OR .SOL DOMAIN..."
+            />
+          </div>
         </div>
       </div>
     );
   }
 
+  if (run.loading) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <p className="animate-pulse font-mono text-sm text-muted-foreground/60">Loading</p>
+      </div>
+    );
+  }
+
+  if (run.error) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <div className="text-center">
+          <p className="font-mono text-sm text-destructive/80">{run.error}</p>
+          <button
+            onClick={() => clearState()}
+            className="mt-4 font-mono text-xs text-primary/70 underline underline-offset-4 transition-colors hover:text-primary"
+          >
+            Try another address
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!selectedAsset) return null;
+
+  const displayBalance = hoverBalance ?? currentBalance;
+  const isHovering = hoverBalance != null;
+  const unitLabel = isUsd ? "USD" : assetLabel(selectedAsset);
+
   return (
     <div className="flex flex-1 overflow-auto">
-      <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
-        <Card className="gap-4 border-border/90 bg-card/80 py-4">
-          <CardHeader className="gap-3 px-4 pb-0">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <CardDescription className="font-mono text-[10px] uppercase tracking-[0.28em] text-primary/80">
-                  Asset History
-                </CardDescription>
-                <CardTitle className="mt-1 font-mono text-xl text-foreground">
-                  {activeAddress || "GTFA asset benchmark"}
-                </CardTitle>
-                <p className="mt-2 font-mono text-[11px] text-muted-foreground">
-                  SOL first, tokens below.
-                </p>
-              </div>
+      <div className="mx-auto flex w-full max-w-[1200px] flex-col px-6 py-5">
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => clearState()}
-                  className="inline-flex cursor-pointer items-center gap-2 rounded border border-border/80 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  New Address
-                </button>
-                {activeAddress && (
+        {/* Search bar */}
+        <div className="mb-6">
+          <SearchBar
+            onSearch={(address) => loadHistory(address)}
+            loading={run.loading}
+            defaultValue={inputValue}
+            submitLabel="Load"
+            placeholder="WALLET ADDRESS OR .SOL DOMAIN..."
+          />
+        </div>
+
+        {/* Asset selector + balance */}
+        <div className="mb-5">
+          {/* Dropdown */}
+          <div className="relative mb-3 inline-block" ref={dropdownRef}>
+            <button
+              onClick={() => setDropdownOpen((o) => !o)}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-border/40 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-border/70 hover:text-foreground"
+            >
+              {assetLabel(selectedAsset)}
+              <ChevronDown className={`h-3 w-3 transition-transform ${dropdownOpen ? "rotate-180" : ""}`} />
+            </button>
+
+            {dropdownOpen && (
+              <div className="absolute left-0 top-full z-30 mt-1 max-h-[320px] min-w-[220px] overflow-y-auto rounded-lg border border-border/50 bg-background/95 py-1 shadow-[0_16px_48px_rgba(0,0,0,0.4)] backdrop-blur-sm">
+                {sortedAssets.map((asset) => (
                   <button
-                    onClick={() => void loadHistory(activeAddress, true)}
-                    disabled={run.loading}
-                    className="inline-flex items-center gap-2 rounded border border-primary/30 bg-primary/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.22em] text-primary transition-colors hover:bg-primary/16 disabled:cursor-not-allowed disabled:opacity-60"
+                    key={asset.assetId}
+                    onClick={() => selectAsset(asset.assetId)}
+                    className={`flex w-full cursor-pointer items-center justify-between gap-4 px-3 py-2 text-left font-mono text-[11px] transition-colors hover:bg-primary/8 ${
+                      asset.assetId === selectedAsset.assetId ? "text-primary" : "text-foreground/70"
+                    }`}
                   >
-                    <RefreshCcw className={`h-3.5 w-3.5 ${run.loading ? "animate-spin" : ""}`} />
-                    Rerun
+                    <span className="flex items-center gap-1.5">
+                      {assetLabel(asset)}
+                      {asset.currentlyHeld && (
+                        <span className="inline-block h-1 w-1 rounded-full bg-primary/60" />
+                      )}
+                    </span>
+                    <span className="tabular-nums text-muted-foreground/50">
+                      {formatDropdownBalance(asset.currentBalance, asset.decimals)}
+                    </span>
                   </button>
-                )}
+                ))}
               </div>
-            </div>
-          </CardHeader>
-          <CardContent className="px-4 pt-0">
-            <SearchBar
-              onSearch={(address) => loadHistory(address)}
-              loading={run.loading}
-              defaultValue={inputValue}
-              submitLabel="Load Asset History"
-              placeholder="PASTE WALLET ADDRESS OR .SOL DOMAIN..."
-            />
-          </CardContent>
-        </Card>
+            )}
+          </div>
 
-        {run.error && (
-          <Card className="border-destructive/30 bg-destructive/6 py-4">
-            <CardContent className="px-4 pt-0">
-              <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-destructive/90">
-                Request Failed
-              </div>
-              <p className="mt-2 font-mono text-sm text-muted-foreground">{run.error}</p>
-            </CardContent>
-          </Card>
+          {/* Balance readout */}
+          <div className="flex items-baseline gap-2">
+            {isUsd && (
+              <span className="font-mono text-[2rem] leading-none text-muted-foreground/30" style={{ fontWeight: 200 }}>$</span>
+            )}
+            <span
+              className={`font-mono text-[3.2rem] leading-none tracking-tight text-foreground tabular-nums transition-opacity ${isHovering ? "opacity-70" : ""}`}
+              style={{ fontWeight: 200 }}
+            >
+              {formatHeroBalance(displayBalance, isUsd)}
+            </span>
+            <span className="font-mono text-lg tracking-tight text-muted-foreground/50" style={{ fontWeight: 200 }}>
+              {unitLabel}
+            </span>
+          </div>
+          <div className="mt-2 flex items-center gap-4">
+            <span
+              className={`font-mono text-xs tabular-nums ${
+                netChange < 0 ? "text-accent/60" : "text-primary/50"
+              }`}
+            >
+              {formatSignedHero(netChange, isUsd)}{!isUsd ? ` ${assetLabel(selectedAsset)}` : ""}
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground/30">
+              {formatDateRangeShort(selectedAsset)}
+            </span>
+          </div>
+        </div>
+
+        {/* SOL/USD toggle — only for SOL */}
+        {canShowUsd && (
+          <div className="mb-4 flex items-center gap-1">
+            <button
+              onClick={() => { setViewMode("raw"); setHoverBalance(null); }}
+              className={`cursor-pointer rounded-full px-3 py-1 font-mono text-[11px] uppercase tracking-[0.12em] transition-all ${
+                viewMode === "raw"
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground/50 hover:text-muted-foreground"
+              }`}
+            >
+              SOL
+            </button>
+            <button
+              onClick={() => { setViewMode("usd"); setHoverBalance(null); }}
+              className={`cursor-pointer rounded-full px-3 py-1 font-mono text-[11px] uppercase tracking-[0.12em] transition-all ${
+                viewMode === "usd"
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground/50 hover:text-muted-foreground"
+              }`}
+            >
+              USD
+            </button>
+          </div>
         )}
 
-        {solAsset && <SolHeroCard asset={solAsset} />}
+        {/* Chart */}
+        <AssetBalanceChart
+          points={effectivePoints}
+          label={unitLabel}
+          decimals={isUsd ? 2 : selectedAsset.decimals}
+          strokeColor="#00d4ff"
+          ariaLabel={`${assetLabel(selectedAsset)} balance history chart`}
+          height={420}
+          borderless
+          onHoverPoint={handleHoverPoint}
+        />
 
-        <Card className="border-border/90 bg-card/70 py-4">
-          <CardContent className="px-4 pt-0">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <SummaryMetric
-                label="TX Scanned"
-                value={benchmarkDetail?.txCount ?? "--"}
-                detail="Wallet transactions returned by GTFA"
-              />
-              <SummaryMetric
-                label="Token Histories"
-                value={benchmarkDetail?.assetCount ?? "--"}
-                detail="Token mints excluding SOL"
-              />
-              <SummaryMetric
-                label="Current Tokens"
-                value={benchmarkDetail?.currentAssetCount ?? "--"}
-                detail="Tokens with non-zero current balance"
-              />
-              <SummaryMetric
-                label="Former Tokens"
-                value={benchmarkDetail?.formerAssetCount ?? "--"}
-                detail="Historical token positions now at zero"
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        <HoldingsTable assets={tableAssets} />
+        <p className="mt-6 font-mono text-[10px] text-muted-foreground/30">
+          All data is calculated live using Helius APIs. No indexing required.{" "}
+          <a
+            href="https://www.helius.dev/docs/rpc/gettransactionsforaddress"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary/40 underline underline-offset-2 transition-colors hover:text-primary/70"
+          >
+            Learn more
+          </a>
+        </p>
       </div>
     </div>
   );

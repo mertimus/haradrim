@@ -43,11 +43,11 @@ function fmtCompact(value: number): string {
 }
 
 function assetTicker(asset: TraceAssetFlow): string {
-  return asset.symbol ?? (asset.kind === "native" ? "SOL" : truncAddr(asset.mint ?? asset.assetId));
-}
-
-function formatAssetSummary(asset: TraceAssetFlow): string {
-  return `${fmtCompact(asset.uiAmount)} ${assetTicker(asset)}`;
+  if (asset.symbol) return asset.symbol;
+  if (asset.kind === "native") return "SOL";
+  const addr = asset.mint ?? asset.assetId;
+  if (!addr || addr.length < 8) return "";
+  return truncAddr(addr);
 }
 
 const NODE_WIDTH = 200;
@@ -113,20 +113,28 @@ interface TraceEdgeData {
   txCount: number;
   transferCount: number;
   assetCount: number;
+  firstSeen: number;
+  lastSeen: number;
+  weight: number;
   [key: string]: unknown;
 }
 
+function formatEdgeDate(ts: number): string {
+  if (!ts) return "";
+  return new Date(ts * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 const EDGE_LABEL_STYLE: React.CSSProperties = {
-  background: "rgba(13, 19, 33, 0.92)",
+  background: "rgba(13, 19, 33, 0.94)",
   border: "1px solid #1e2a3a",
-  borderRadius: 3,
-  padding: "1px 6px",
+  borderRadius: 4,
+  padding: "4px 8px",
   fontFamily: "var(--font-mono)",
   fontSize: 9,
   color: "#c8d6e5",
   whiteSpace: "nowrap",
-  textAlign: "center",
-  lineHeight: "16px",
+  textAlign: "left",
+  lineHeight: "15px",
 };
 
 const TraceEdge = memo(function TraceEdge({
@@ -139,32 +147,44 @@ const TraceEdge = memo(function TraceEdge({
   data,
 }: EdgeProps<Edge<TraceEdgeData>>) {
   const d = data as TraceEdgeData;
+  const strokeWidth = 1.5 + (d.weight ?? 0) * 4.5;
 
   const [path, labelX, labelY] = getBezierPath({
     sourceX, sourceY, targetX, targetY,
     sourcePosition, targetPosition,
   });
 
-  const primary = d.assets[0];
-  const summary = primary ? formatAssetSummary(primary) : `${fmtCompact(d.transferCount)} moves`;
-  const extra = d.assetCount > 1 ? ` +${d.assetCount - 1}` : "";
-  const label = `${summary}${extra} · ${d.txCount} tx`;
+  const solAsset = d.assets.find((a) => a.kind === "native");
+  const solLine = solAsset ? fmtCompact(solAsset.uiAmount) : "0";
+  const tokens = d.assets
+    .filter((a) => a.kind === "token")
+    .filter((a) => {
+      const ticker = assetTicker(a);
+      return ticker && ticker !== "..." && ticker.length > 0;
+    });
+  const topTokens = tokens.slice(0, 3);
+  const remainingCount = tokens.length - topTokens.length;
+  const tokenLine = topTokens.map((a) => assetTicker(a)).join(", ")
+    + (remainingCount > 0 ? ` +${remainingCount}` : "");
+  const dateLine = formatEdgeDate(d.lastSeen);
 
   return (
     <g>
-      {/* Fat invisible hit area */}
       <path d={path} fill="none" stroke="transparent" strokeWidth={16} pointerEvents="all" style={{ cursor: "default" }} />
-      {/* Visible edge */}
-      <path d={path} fill="none" stroke="#3a4a5a" strokeWidth={1.5} pointerEvents="none" />
-      {/* Label */}
+      <path d={path} fill="none" stroke="#3a4a5a" strokeWidth={strokeWidth} pointerEvents="none" />
       <foreignObject
-        x={labelX - 82}
-        y={labelY - 10}
-        width={164}
-        height={20}
+        x={labelX - 110}
+        y={labelY - 38}
+        width={220}
+        height={80}
         style={{ overflow: "visible", pointerEvents: "none" }}
       >
-        <div style={EDGE_LABEL_STYLE}>{label}</div>
+        <div style={EDGE_LABEL_STYLE}>
+          <div><span style={{ color: "#6b7b8d" }}>Total (SOL): </span><span style={{ color: "#ffb800" }}>{solLine}</span></div>
+          {tokens.length > 0 && <div><span style={{ color: "#6b7b8d" }}>Tokens: </span><span style={{ color: "#c8d6e5" }}>{tokenLine}</span></div>}
+          <div><span style={{ color: "#6b7b8d" }}>Transactions: </span><span style={{ color: "#c8d6e5" }}>{d.txCount}</span></div>
+          {dateLine && <div><span style={{ color: "#6b7b8d" }}>Last seen: </span><span style={{ color: "#c8d6e5" }}>{dateLine}</span></div>}
+        </div>
       </foreignObject>
     </g>
   );

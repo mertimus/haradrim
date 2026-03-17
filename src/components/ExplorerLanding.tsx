@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 
-type ExplorerLandingMode = "wallet" | "flows" | "trace";
+type ExplorerLandingMode = "trace";
 
 interface ExplorerLandingProps {
   mode: ExplorerLandingMode;
@@ -19,34 +19,6 @@ interface LandingCopy {
 }
 
 const LANDING_COPY: Record<ExplorerLandingMode, LandingCopy> = {
-  wallet: {
-    eyebrow: "Wallet Operator",
-    title: "Map the counterparties around one wallet",
-    description:
-      "Start with a single address to load its profile, relationship graph, and ranked counterparties. This is the fastest way to understand who the wallet actually interacts with.",
-    steps: [
-      "Paste a wallet address to load the profile strip, graph, and counterparty table together.",
-      "Click any node to inspect balances, labels, and direct relationship detail on the right.",
-      "Add nodes or overlay more wallets to compare neighborhoods and shared counterparties.",
-    ],
-    footer: ["Profile + graph", "Ranked counterparties", "Overlay comparisons"],
-    previewLabel: "Preview",
-    previewHint: "Two wallet hubs with a shared counterparty highlighted between them.",
-  },
-  flows: {
-    eyebrow: "Flow Lanes",
-    title: "Read who sent value and who received it",
-    description:
-      "Flows collapses the wallet graph into directional lanes so you can read movement by side, frequency, and amount without the visual noise of a full topology view.",
-    steps: [
-      "Paste a wallet address to split counterparties into inflow and outflow lanes.",
-      "Select a lane to inspect transaction-level transfer history in the side panel.",
-      "Use the graph and time filters after load to isolate the exact movement you care about.",
-    ],
-    footer: ["Directional lanes", "Transfer history", "Fast triage view"],
-    previewLabel: "Preview",
-    previewHint: "Outflow and inflow lanes with example transfer rows and amount chips.",
-  },
   trace: {
     eyebrow: "Multi-hop Trace",
     title: "Seed a wallet, then grow the graph hop by hop",
@@ -156,91 +128,10 @@ export function ExplorerLanding({ mode, action, error }: ExplorerLandingProps) {
                 </div>
               </div>
 
-              {mode === "wallet" && <WalletPreview />}
-              {mode === "flows" && <FlowsPreview />}
               {mode === "trace" && <TracePreview />}
             </div>
           </div>
         </section>
-      </div>
-    </div>
-  );
-}
-
-function WalletPreview() {
-  return (
-    <svg className="h-[320px] w-full" viewBox="0 0 720 320" aria-hidden="true">
-      <path d="M224 170 C 292 170, 304 146, 360 146" style={EDGE_STYLE} />
-      <path d="M496 146 C 548 146, 566 176, 632 176" style={EDGE_STYLE} />
-
-      <rect x={108} y={142} width={116} height={56} rx={6} fill="#0d1321" fillOpacity="0.96" stroke="#35cfff" strokeWidth="2" />
-      <text x={124} y={174} fill="#00d4ff" fontFamily="var(--font-mono)" fontSize="11" fontWeight="700">Wallet A</text>
-      <text x={124} y={190} fill="#6b7b8d" fontFamily="var(--font-mono)" fontSize="9">Gh5c...uzH3</text>
-
-      <rect x={520} y={148} width={116} height={56} rx={6} fill="#0d1321" fillOpacity="0.95" stroke="#ffb800" strokeWidth="2" />
-      <text x={536} y={180} fill="#ffb800" fontFamily="var(--font-mono)" fontSize="11" fontWeight="700">Wallet B</text>
-      <text x={536} y={196} fill="#6b7b8d" fontFamily="var(--font-mono)" fontSize="9">9R2k...vN4q</text>
-
-      <rect x={302} y={118} width={194} height={56} rx={6} fill="#0d1321" fillOpacity="0.94" stroke="#314050" strokeWidth="1" />
-      <text x={319} y={139} fill="#c8d6e5" fontFamily="var(--font-mono)" fontSize="10" fontWeight="700">Shared counterparty</text>
-      <text x={319} y={156} fill="#6b7b8d" fontFamily="var(--font-mono)" fontSize="9">market-maker.sol</text>
-      <text x={319} y={170} fill="#9ca8b7" fontFamily="var(--font-mono)" fontSize="9">38 tx overlap</text>
-    </svg>
-  );
-}
-
-function FlowsPreview() {
-  return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]" aria-hidden="true">
-      <div className="space-y-3">
-        <FlowLane
-          title="Outflow lane"
-          tone="rgba(255, 184, 0, 0.12)"
-          accent="#ffb800"
-          rows={[
-            ["Exchange desk", "41.2 SOL", "12 tx"],
-            ["Router cluster", "9.6 SOL", "4 tx"],
-            ["Cold storage", "3.1 SOL", "2 tx"],
-          ]}
-        />
-        <FlowLane
-          title="Inflow lane"
-          tone="rgba(0, 212, 255, 0.12)"
-          accent="#00d4ff"
-          rows={[
-            ["Funding wallet", "27.4 SOL", "8 tx"],
-            ["OTC peer", "11.8 SOL", "3 tx"],
-            ["Fee rebate", "0.8 SOL", "6 tx"],
-          ]}
-        />
-      </div>
-
-      <div className="rounded-2xl border border-border/80 bg-background/70 p-3">
-        <div className="font-mono text-[8px] uppercase tracking-[0.24em] text-muted-foreground">
-          Selected lane
-        </div>
-        <div className="mt-3 rounded-xl border border-primary/30 bg-primary/10 px-3 py-2">
-          <div className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-primary">
-            Exchange desk
-          </div>
-          <div className="mt-1 font-mono text-[9px] text-muted-foreground">
-            12 transfers · 41.2 SOL net outflow
-          </div>
-        </div>
-        <div className="mt-3 space-y-2">
-          {[
-            "2026-03-08 · 12.0 SOL · swap funding",
-            "2026-03-06 · 8.2 SOL · exchange withdrawal",
-            "2026-03-01 · 4.1 SOL · route rebalance",
-          ].map((row) => (
-            <div
-              key={row}
-              className="rounded-lg border border-border/70 bg-card/70 px-3 py-2 font-mono text-[9px] text-foreground/75"
-            >
-              {row}
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );
@@ -289,50 +180,6 @@ function TracePreview() {
       <SvgTraceEdgeChip x={258} y={204} width={170} label="11.4k BERN +2 • 226 tx" />
       <SvgTraceEdgeChip x={542} y={128} width={126} label="1.6k SOL • 63 tx" />
     </svg>
-  );
-}
-
-function FlowLane({
-  title,
-  tone,
-  accent,
-  rows,
-}: {
-  title: string;
-  tone: string;
-  accent: string;
-  rows: Array<[string, string, string]>;
-}) {
-  return (
-    <div className="rounded-2xl border border-border/80 bg-background/70 p-3">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="font-mono text-[8px] uppercase tracking-[0.24em]" style={{ color: accent }}>
-          {title}
-        </div>
-        <div className="font-mono text-[8px] uppercase tracking-[0.18em] text-muted-foreground">
-          Preview rows
-        </div>
-      </div>
-      <div className="space-y-2">
-        {rows.map(([label, amount, tx]) => (
-          <div
-            key={label}
-            className="rounded-xl border px-3 py-2"
-            style={{ borderColor: tone, background: `linear-gradient(90deg, ${tone}, rgba(10, 14, 23, 0.2))` }}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-[10px] font-bold text-foreground/80">{label}</span>
-              <span className="font-mono text-[9px]" style={{ color: accent }}>
-                {amount}
-              </span>
-            </div>
-            <div className="mt-1 font-mono text-[8px] uppercase tracking-[0.18em] text-muted-foreground">
-              {tx}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 

@@ -8,6 +8,9 @@ import {
   getCurrentTokenBalancesByOwner,
   getTokenMetadataBatch,
 } from "./providers.mjs";
+import { stablecoinDashboardInternals } from "./stablecoin-dashboard-core.mjs";
+
+const { STABLECOIN_MINTS } = stablecoinDashboardInternals;
 
 const MAX_TOTAL_CHART_POINTS = 12_000;
 const MAX_POINTS_PER_ASSET = 240;
@@ -271,6 +274,7 @@ export function analyzeWalletAssetBalanceHistory(address, deps = {}) {
     Promise.resolve(fetchTransactionsImpl(address)),
     Promise.resolve(getCurrentTokenBalancesByOwnerImpl(address)).catch(() => new Map()),
   ]).then(async ([transactions, currentTokenBalances]) => {
+
     const ordered = deduplicateTransactions(transactions)
       .filter((tx) => tx?.meta && !tx.meta.err)
       .sort(compareTransactions);
@@ -293,6 +297,7 @@ export function analyzeWalletAssetBalanceHistory(address, deps = {}) {
     const descending = [...ordered].reverse();
     const runningTokenBalances = new Map();
     for (const [mint, balance] of currentTokenBalances.entries()) {
+      if (!STABLECOIN_MINTS.has(mint)) continue;
       runningTokenBalances.set(mint, {
         rawAmount: BigInt(balance.rawAmount ?? 0n),
         decimals: Number(balance.decimals ?? 0),
@@ -301,7 +306,9 @@ export function analyzeWalletAssetBalanceHistory(address, deps = {}) {
 
     const tokenPointsByMint = new Map();
     const tokenObservations = new Map();
-    const trackedMints = new Set(currentTokenBalances.keys());
+    const trackedMints = new Set(
+      [...currentTokenBalances.keys()].filter((mint) => STABLECOIN_MINTS.has(mint)),
+    );
 
     for (const tx of descending) {
       const signature = tx?.transaction?.signatures?.[0];
@@ -311,6 +318,7 @@ export function analyzeWalletAssetBalanceHistory(address, deps = {}) {
       const touchedMints = collectWalletMintActivity(tx, address);
 
       for (const [mint, activity] of touchedMints.entries()) {
+        if (!STABLECOIN_MINTS.has(mint)) continue;
         const running = runningTokenBalances.get(mint) ?? {
           rawAmount: 0n,
           decimals: Number(activity.decimals ?? 0),
@@ -335,10 +343,6 @@ export function analyzeWalletAssetBalanceHistory(address, deps = {}) {
           observation.decimals = observation.decimals || decimals;
           observation.earliestTimestamp = normalizeTimestamp(timestamp) ?? observation.earliestTimestamp;
           observation.earliestBalanceRaw = beforeRaw;
-        }
-
-        if (activity.preRaw > 0n || activity.postRaw > 0n || beforeRaw > 0n || afterRaw > 0n) {
-          trackedMints.add(mint);
         }
 
         if (deltaRaw !== 0n) {

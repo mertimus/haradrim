@@ -1,5 +1,11 @@
 import { rpcJson, getBatchIdentity, mapWithConcurrency, fetchWithTimeout } from "./providers.mjs";
-import { DIALECT_API_KEY, DIALECT_API_BASE } from "./config.mjs";
+import { cachedValue } from "./cache.mjs";
+import { DIALECT_API_KEY, DIALECT_API_BASE, STABLECOIN_DASHBOARD_TTL_MS } from "./config.mjs";
+
+// Keep internal dashboard fragments no staler than the route-level cache.
+const SUPPLY_CACHE_TTL_MS = STABLECOIN_DASHBOARD_TTL_MS;
+const LARGEST_ACCTS_CACHE_TTL_MS = STABLECOIN_DASHBOARD_TTL_MS;
+const YIELD_CACHE_TTL_MS = STABLECOIN_DASHBOARD_TTL_MS;
 
 const STABLECOINS = [
   { ticker: "USDC", name: "USD Coin", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" },
@@ -14,6 +20,8 @@ const STABLECOINS = [
   { ticker: "USDS", name: "Sky Dollar", mint: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA" },
   { ticker: "JupUSD", name: "JupUSD", mint: "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD" },
 ];
+
+const STABLECOIN_MINTS = new Set(STABLECOINS.map((s) => s.mint));
 
 const LARGEST_ACCOUNTS_LIMIT = 20;
 const TOP_HOLDERS_DISPLAY = 20;
@@ -240,15 +248,25 @@ export async function buildStablecoinDashboard(deps = {}) {
   const rpc = deps.rpcJson ?? rpcJson;
   const batchIdentity = deps.getBatchIdentity ?? getBatchIdentity;
   const fetcher = deps.fetchWithTimeout ?? fetchWithTimeout;
+  const cache = deps.rpcJson || deps.getBatchIdentity || deps.fetchWithTimeout
+    ? async (_key, _ttlMs, loader) => loader()
+    : cachedValue;
 
   // Phase 1: Fetch supply + accounts per coin (concurrency-limited to avoid rate limits)
+  // Individual sub-calls are cached so dashboard rebuilds are fast
   // Yield markets fire independently in parallel
-  const yieldPromise = fetchYieldMarkets(STABLECOINS, fetcher).catch(() => []);
+  const yieldPromise = cache("sc:yield-markets", YIELD_CACHE_TTL_MS, () =>
+    fetchYieldMarkets(STABLECOINS, fetcher).catch(() => []),
+  );
 
   const coinData = await mapWithConcurrency(STABLECOINS, 4, async (sc) => {
     const [supply, accounts] = await Promise.all([
-      fetchTokenSupply(sc.mint, rpc),
-      fetchLargestAccounts(sc.mint, LARGEST_ACCOUNTS_LIMIT, rpc),
+      cache(`sc:supply:${sc.mint}`, SUPPLY_CACHE_TTL_MS, () =>
+        fetchTokenSupply(sc.mint, rpc),
+      ),
+      cache(`sc:largest:${sc.mint}`, LARGEST_ACCTS_CACHE_TTL_MS, () =>
+        fetchLargestAccounts(sc.mint, LARGEST_ACCOUNTS_LIMIT, rpc),
+      ),
     ]);
     return { supply, accounts };
   });
@@ -353,4 +371,5 @@ export const stablecoinDashboardInternals = {
   buildConcentrationRanking,
   fetchYieldMarkets,
   STABLECOINS,
+  STABLECOIN_MINTS,
 };

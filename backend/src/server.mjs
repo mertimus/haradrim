@@ -365,7 +365,8 @@ async function handleWalletAnalysis(req, res, address, searchParams) {
 
 async function handleTraceAnalysis(req, res, address, searchParams) {
   const range = parseRange(searchParams);
-  const cacheKey = `trace-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}`;
+  const limit = searchParams.get("limit");
+  const cacheKey = `trace-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}:${limit ?? "full"}`;
   const cached = getCachedValue(cacheKey);
   if (cached) {
     sendJson(res, 200, cached);
@@ -382,7 +383,15 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
   const result = await withConcurrencyLimit(
     HEAVY_ROUTE_POLICIES.traceAnalysis.concurrencyLabel,
     HEAVY_ROUTE_POLICIES.traceAnalysis.maxConcurrency,
-    () => cachedValue(cacheKey, TRACE_ANALYSIS_TTL_MS, () => analyzeTrace(address, range)),
+    () => cachedValue(cacheKey, TRACE_ANALYSIS_TTL_MS, () =>
+      analyzeTrace(address, range, (enriched) => {
+        try {
+          setCachedValue(cacheKey, enriched, TRACE_ANALYSIS_TTL_MS);
+        } catch (err) {
+          console.error("[trace-enrich] failed to cache enriched result:", err);
+        }
+      }, { limit }),
+    ),
   );
   sendJson(res, 200, result);
 }

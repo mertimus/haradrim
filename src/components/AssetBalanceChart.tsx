@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, useState, type PointerEvent } from "react";
 import type { AssetBalanceHistoryPoint } from "@/lib/backend-api";
 
 interface AssetBalanceChartProps {
@@ -7,6 +7,9 @@ interface AssetBalanceChartProps {
   decimals?: number;
   strokeColor?: string;
   ariaLabel?: string;
+  height?: number;
+  borderless?: boolean;
+  onHoverPoint?: (point: AssetBalanceHistoryPoint | null) => void;
 }
 
 interface ChartPoint extends AssetBalanceHistoryPoint {
@@ -27,27 +30,24 @@ interface XTick {
 }
 
 const CHART_WIDTH = 960;
-const CHART_HEIGHT = 320;
-const CHART_MARGIN = { top: 20, right: 20, bottom: 30, left: 68 };
+const DEFAULT_HEIGHT = 320;
+const CHART_MARGIN = { top: 24, right: 24, bottom: 36, left: 72 };
 const PLOT_WIDTH = CHART_WIDTH - CHART_MARGIN.left - CHART_MARGIN.right;
-const PLOT_HEIGHT = CHART_HEIGHT - CHART_MARGIN.top - CHART_MARGIN.bottom;
 const MIN_X_TICK_GAP = 140;
 
-function formatAssetAmount(value: number, symbol?: string, decimals = 6): string {
-  const safeDecimals = Math.max(0, Math.min(decimals, 9));
-  const formatted = Math.abs(value) >= 1_000
-    ? value.toLocaleString(undefined, { maximumFractionDigits: 0 })
-    : Math.abs(value) >= 1
-      ? value.toLocaleString(undefined, {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: Math.min(4, safeDecimals),
-      })
-      : value.toLocaleString(undefined, {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: Math.min(6, Math.max(safeDecimals, 2)),
-      });
+function pHeight(chartHeight: number): number {
+  return chartHeight - CHART_MARGIN.top - CHART_MARGIN.bottom;
+}
 
-  return symbol ? `${formatted} ${symbol}` : formatted;
+function formatAxisValue(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}B`;
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 1 })}M`;
+  if (abs >= 10_000) return `${(value / 1_000).toLocaleString(undefined, { maximumFractionDigits: 0 })}K`;
+  if (abs >= 1_000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  if (abs >= 100) return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  if (abs >= 1) return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
 function buildLinePath(points: ChartPoint[]): string {
@@ -55,19 +55,18 @@ function buildLinePath(points: ChartPoint[]): string {
   return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 }
 
-function buildAreaPath(points: ChartPoint[]): string {
+function buildAreaPath(points: ChartPoint[], chartHeight: number): string {
   if (points.length === 0) return "";
   const line = buildLinePath(points);
   const first = points[0];
   const last = points[points.length - 1];
-  return `${line} L ${last.x} ${CHART_HEIGHT - CHART_MARGIN.bottom} L ${first.x} ${CHART_HEIGHT - CHART_MARGIN.bottom} Z`;
+  return `${line} L ${last.x} ${chartHeight - CHART_MARGIN.bottom} L ${first.x} ${chartHeight - CHART_MARGIN.bottom} Z`;
 }
 
 function formatXTickLabel(timestamp: number, includeYear: boolean): string {
   return new Date(timestamp * 1000).toLocaleDateString(undefined, {
     month: "short",
-    day: "numeric",
-    ...(includeYear ? { year: "numeric" } : {}),
+    ...(includeYear ? { year: "numeric" } : { day: "numeric" }),
   });
 }
 
@@ -132,7 +131,7 @@ function buildXTicks(
   return filtered;
 }
 
-function buildChartGeometry(points: AssetBalanceHistoryPoint[]): {
+function buildChartGeometry(points: AssetBalanceHistoryPoint[], chartHeight: number): {
   chartPoints: ChartPoint[];
   xTicks: XTick[];
   yTicks: YTick[];
@@ -145,6 +144,7 @@ function buildChartGeometry(points: AssetBalanceHistoryPoint[]): {
     };
   }
 
+  const ph = pHeight(chartHeight);
   const hasUsableTimestamps = points.some((point) => point.timestamp > 0);
   const xValues = hasUsableTimestamps
     ? points.map((point) => point.timestamp || 0)
@@ -164,7 +164,7 @@ function buildChartGeometry(points: AssetBalanceHistoryPoint[]): {
   const chartPoints = points.map((point, chartIndex) => {
     const xValue = hasUsableTimestamps ? point.timestamp || xMin : chartIndex;
     const x = CHART_MARGIN.left + ((xValue - xMin) / xSpread) * PLOT_WIDTH;
-    const y = CHART_MARGIN.top + (1 - (point.balance - yMin) / ySpreadPadded) * PLOT_HEIGHT;
+    const y = CHART_MARGIN.top + (1 - (point.balance - yMin) / ySpreadPadded) * ph;
     return {
       ...point,
       x,
@@ -177,7 +177,7 @@ function buildChartGeometry(points: AssetBalanceHistoryPoint[]): {
     const ratio = index / 3;
     return {
       value: yMax - (yMax - yMin) * ratio,
-      y: CHART_MARGIN.top + ratio * PLOT_HEIGHT,
+      y: CHART_MARGIN.top + ratio * ph,
     };
   });
 
@@ -189,18 +189,52 @@ function buildChartGeometry(points: AssetBalanceHistoryPoint[]): {
 export function AssetBalanceChart({
   points,
   label,
-  decimals,
   strokeColor = "#00d4ff",
   ariaLabel = "Asset balance history chart",
+  height = DEFAULT_HEIGHT,
+  borderless = false,
+  onHoverPoint,
 }: AssetBalanceChartProps) {
   const gradientId = useId().replace(/:/g, "-");
-  const { chartPoints, xTicks, yTicks } = buildChartGeometry(points);
+  const glowId = `${gradientId}-glow`;
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const { chartPoints, xTicks, yTicks } = buildChartGeometry(points, height);
   const linePath = buildLinePath(chartPoints);
-  const areaPath = buildAreaPath(chartPoints);
+  const areaPath = buildAreaPath(chartPoints, height);
+
+  const activePoint = hoverIndex != null ? chartPoints[hoverIndex] ?? null : null;
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (chartPoints.length === 0) return;
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - bounds.left;
+
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < chartPoints.length; index += 1) {
+      const distance = Math.abs((chartPoints[index].x / CHART_WIDTH) * bounds.width - x);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    }
+
+    setHoverIndex(bestIndex);
+    onHoverPoint?.(chartPoints[bestIndex]);
+  }
+
+  function handlePointerLeave() {
+    setHoverIndex(null);
+    onHoverPoint?.(null);
+  }
 
   if (chartPoints.length === 0) {
     return (
-      <div className="flex h-[320px] items-center justify-center rounded-xl border border-border/80 bg-background/70">
+      <div
+        className={`flex items-center justify-center ${borderless ? "" : "rounded-xl border border-border/80 bg-background/70"}`}
+        style={{ height: `${height}px` }}
+      >
         <div className="text-center">
           <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-muted-foreground">
             No Chart Data
@@ -214,21 +248,37 @@ export function AssetBalanceChart({
   }
 
   return (
-    <div className="rounded-2xl border border-border/90 bg-[#08111d] p-4 shadow-[0_24px_64px_rgba(0,0,0,0.32)]">
-      <div className="relative">
+    <div
+      className={borderless ? "" : "rounded-2xl border border-border/90 bg-[#08111d] p-4 shadow-[0_24px_64px_rgba(0,0,0,0.32)]"}
+    >
+      <div
+        className="relative cursor-crosshair"
+        onPointerMove={handlePointerMove}
+        onPointerLeave={handlePointerLeave}
+      >
         <svg
-          viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
-          className="h-[320px] w-full"
+          viewBox={`0 0 ${CHART_WIDTH} ${height}`}
+          style={{ height: `${height}px` }}
+          className="w-full"
           role="img"
           aria-label={label ? `${label} balance history chart` : ariaLabel}
         >
           <defs>
             <linearGradient id={gradientId} x1="0%" x2="0%" y1="0%" y2="100%">
-              <stop offset="0%" stopColor={strokeColor} stopOpacity="0.28" />
-              <stop offset="100%" stopColor={strokeColor} stopOpacity="0.02" />
+              <stop offset="0%" stopColor={strokeColor} stopOpacity="0.14" />
+              <stop offset="70%" stopColor={strokeColor} stopOpacity="0.04" />
+              <stop offset="100%" stopColor={strokeColor} stopOpacity="0" />
             </linearGradient>
+            <filter id={glowId}>
+              <feGaussianBlur stdDeviation="4" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
           </defs>
 
+          {/* Horizontal grid — barely there */}
           {yTicks.map((tick, index) => (
             <g key={`${index}:${tick.value}`}>
               <line
@@ -236,36 +286,36 @@ export function AssetBalanceChart({
                 x2={CHART_WIDTH - CHART_MARGIN.right}
                 y1={tick.y}
                 y2={tick.y}
-                stroke="rgba(107, 123, 141, 0.18)"
-                strokeDasharray="4 6"
+                stroke="rgba(148, 163, 184, 0.07)"
               />
               <text
-                x={CHART_MARGIN.left - 12}
-                y={tick.y + 4}
+                x={CHART_MARGIN.left - 14}
+                y={tick.y + 3.5}
                 textAnchor="end"
-                fill="rgba(107, 123, 141, 0.92)"
+                fill="rgba(148, 163, 184, 0.40)"
                 fontSize="10"
                 fontFamily="JetBrains Mono, ui-monospace, monospace"
               >
-                {formatAssetAmount(tick.value, undefined, decimals)}
+                {formatAxisValue(tick.value)}
               </text>
             </g>
           ))}
 
+          {/* Vertical grid — whisper-thin */}
           {xTicks.map((tick) => (
             <g key={tick.key}>
               <line
                 x1={tick.x}
                 x2={tick.x}
                 y1={CHART_MARGIN.top}
-                y2={CHART_HEIGHT - CHART_MARGIN.bottom}
-                stroke="rgba(30, 42, 58, 0.65)"
+                y2={height - CHART_MARGIN.bottom}
+                stroke="rgba(148, 163, 184, 0.05)"
               />
               <text
                 x={tick.x}
-                y={CHART_HEIGHT - 8}
+                y={height - 10}
                 textAnchor="middle"
-                fill="rgba(107, 123, 141, 0.92)"
+                fill="rgba(148, 163, 184, 0.35)"
                 fontSize="10"
                 fontFamily="JetBrains Mono, ui-monospace, monospace"
               >
@@ -274,15 +324,44 @@ export function AssetBalanceChart({
             </g>
           ))}
 
+          {/* Area fill */}
           <path d={areaPath} fill={`url(#${gradientId})`} />
+
+          {/* Line glow layer */}
           <path
             d={linePath}
             fill="none"
             stroke={strokeColor}
-            strokeWidth="3"
+            strokeWidth="6"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            strokeOpacity="0.15"
+          />
+
+          {/* Main line */}
+          <path
+            d={linePath}
+            fill="none"
+            stroke={strokeColor}
+            strokeWidth="2"
             strokeLinejoin="round"
             strokeLinecap="round"
           />
+
+          {/* Hover crosshair */}
+          {activePoint && (
+            <>
+              <line
+                x1={activePoint.x}
+                x2={activePoint.x}
+                y1={CHART_MARGIN.top}
+                y2={height - CHART_MARGIN.bottom}
+                stroke="rgba(255, 255, 255, 0.12)"
+              />
+              <circle cx={activePoint.x} cy={activePoint.y} r="4" fill={strokeColor} filter={`url(#${glowId})`} />
+              <circle cx={activePoint.x} cy={activePoint.y} r="2.5" fill="#fff" />
+            </>
+          )}
         </svg>
       </div>
     </div>

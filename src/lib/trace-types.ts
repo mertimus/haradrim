@@ -79,6 +79,7 @@ export interface TraceNodeFlows {
 
 export interface TraceFlowFilters {
   minAmount: string;
+  maxAmount: string;
   dateFrom: string;
   dateTo: string;
   assetKind: TraceAssetKindFilter;
@@ -87,6 +88,7 @@ export interface TraceFlowFilters {
 
 export const DEFAULT_TRACE_FLOW_FILTERS: TraceFlowFilters = {
   minAmount: "",
+  maxAmount: "",
   dateFrom: "",
   dateTo: "",
   assetKind: "all",
@@ -137,6 +139,7 @@ function bigintToUiAmount(rawAmount: bigint, decimals: number): number {
 }
 
 function initTraceCounterpartyEntry(timestamp: number): MutableTraceCounterparty {
+  const ts = timestamp > 0 ? timestamp : 0;
   return {
     txCount: 0,
     transferCount: 0,
@@ -144,8 +147,8 @@ function initTraceCounterpartyEntry(timestamp: number): MutableTraceCounterparty
     outflowTxCount: 0,
     inflowTransferCount: 0,
     outflowTransferCount: 0,
-    firstSeen: timestamp,
-    lastSeen: timestamp,
+    firstSeen: ts,
+    lastSeen: ts,
     inflowAssets: new Map(),
     outflowAssets: new Map(),
   };
@@ -318,15 +321,18 @@ export function filterTraceEvents(
   events: TraceTransferEvent[],
   filters: TraceFlowFilters,
 ): TraceTransferEvent[] {
-  const minAmount = Number(filters.minAmount);
-  const amountThreshold = Number.isFinite(minAmount) && minAmount > 0 ? minAmount : 0;
+  const min = Number(filters.minAmount);
+  const minThreshold = Number.isFinite(min) && min > 0 ? min : 0;
+  const max = Number(filters.maxAmount);
+  const maxThreshold = Number.isFinite(max) && max > 0 ? max : Infinity;
   const fromTs = startOfDayTimestamp(filters.dateFrom);
   const toTsExclusive = endOfDayTimestamp(filters.dateTo);
 
   return events.filter((event) => {
     if (filters.assetKind !== "all" && event.kind !== filters.assetKind) return false;
     if (filters.assetId !== TRACE_ALL_ASSETS && event.assetId !== filters.assetId) return false;
-    if (amountThreshold > 0 && event.uiAmount < amountThreshold) return false;
+    if (minThreshold > 0 && event.uiAmount < minThreshold) return false;
+    if (maxThreshold < Infinity && event.uiAmount > maxThreshold) return false;
     if (fromTs != null && event.timestamp < fromTs) return false;
     if (toTsExclusive != null && event.timestamp >= toTsExclusive) return false;
     return true;
@@ -348,8 +354,10 @@ export function aggregateTraceCounterparties(events: TraceTransferEvent[]): Trac
   for (const event of events) {
     const entry = counterpartyMap.get(event.counterparty) ?? initTraceCounterpartyEntry(event.timestamp);
     entry.transferCount += 1;
-    entry.firstSeen = Math.min(entry.firstSeen, event.timestamp);
-    entry.lastSeen = Math.max(entry.lastSeen, event.timestamp);
+    if (event.timestamp > 0) {
+      entry.firstSeen = entry.firstSeen > 0 ? Math.min(entry.firstSeen, event.timestamp) : event.timestamp;
+      entry.lastSeen = Math.max(entry.lastSeen, event.timestamp);
+    }
     entry.label = entry.label ?? event.counterpartyLabel;
     entry.category = entry.category ?? event.counterpartyCategory;
     entry.accountType = entry.accountType ?? event.counterpartyAccountType;

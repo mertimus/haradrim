@@ -1,6 +1,7 @@
 import { GTFA_TOKEN_ACCOUNTS_MODE } from "./config.mjs";
 import {
   fetchTransactions,
+  fetchRecentTransactions,
   getAccountTypesParallel,
   getBatchIdentity,
   getTokenMetadataBatch,
@@ -642,29 +643,8 @@ function buildTraceNodeFlows(address, events) {
   };
 }
 
-async function analyzeTraceEvents(address, txs) {
-  const rawEvents = parseTraceTransferEvents(txs, address)
-    .filter((event) => !KNOWN_PROGRAMS.has(event.counterparty));
-
-  if (rawEvents.length === 0) {
-    return buildTraceNodeFlows(address, []);
-  }
-
-  const uniqueCounterparties = [...new Set(rawEvents.map((event) => event.counterparty))];
-  const accountTypeMap = await getAccountTypesParallel(uniqueCounterparties).catch(() => new Map());
-
-  const walletEvents = rawEvents.filter((event) => {
-    const info = accountTypeMap.get(event.counterparty);
-    return !info || info.type === "wallet" || info.type === "unknown";
-  });
-
-  const ranked = summarizeTraceCounterparties(walletEvents);
-  const identityMap = await getBatchIdentity(ranked.slice(0, 150).map((entry) => entry.address)).catch(() => new Map());
-  const tokenMetaMap = await getTokenMetadataBatch(
-    [...new Set(walletEvents.map((event) => event.mint).filter(Boolean))].slice(0, 400),
-  ).catch(() => new Map());
-
-  const enrichedEvents = walletEvents
+function enrichEvents(walletEvents, identityMap, tokenMetaMap, accountTypeMap) {
+  return walletEvents
     .map((event) => {
       const identity = identityMap.get(event.counterparty);
       const meta = event.assetId === NATIVE_SOL_ASSET_ID
@@ -673,9 +653,9 @@ async function analyzeTraceEvents(address, txs) {
 
       return {
         ...event,
-        counterpartyLabel: identity?.label ?? identity?.name,
-        counterpartyCategory: identity?.category,
-        counterpartyAccountType: accountTypeMap.get(event.counterparty)?.type,
+        counterpartyLabel: identity?.label ?? identity?.name ?? event.counterpartyLabel,
+        counterpartyCategory: identity?.category ?? event.counterpartyCategory,
+        counterpartyAccountType: accountTypeMap.get(event.counterparty)?.type ?? event.counterpartyAccountType,
         symbol: meta?.symbol ?? event.symbol,
         name: meta?.name ?? event.name,
         logoUri: meta?.logoUri ?? event.logoUri,
@@ -685,8 +665,58 @@ async function analyzeTraceEvents(address, txs) {
       const label = (event.counterpartyLabel ?? "").toLowerCase();
       return !label.includes("spam") && !label.includes("dusting");
     });
+}
 
-  return buildTraceNodeFlows(address, enrichedEvents);
+async function analyzeTraceEvents(address, txs, onEnriched) {
+  const rawEvents = parseTraceTransferEvents(txs, address)
+    .filter((event) => !KNOWN_PROGRAMS.has(event.counterparty));
+
+  if (rawEvents.length === 0) {
+    return buildTraceNodeFlows(address, []);
+  }
+
+  const uniqueCounterparties = [...new Set(rawEvents.map((event) => event.counterparty))];
+  const accountTypeMap = await getAccountTypesParallel(uniqueCounterparties).catch(() => new Map());
+  const walletEvents = rawEvents.filter((event) => {
+    const info = accountTypeMap.get(event.counterparty);
+    return !info || info.type === "wallet" || info.type === "unknown";
+  });
+
+  if (walletEvents.length === 0) {
+    return buildTraceNodeFlows(address, []);
+  }
+
+  // Phase 1: return raw events immediately with SOL labeled
+  const solLabeledEvents = walletEvents.map((event) => {
+    if (event.assetId === NATIVE_SOL_ASSET_ID) {
+      return { ...event, symbol: "SOL", name: "Native SOL" };
+    }
+    return event;
+  });
+  const fastResult = {
+    ...buildTraceNodeFlows(address, solLabeledEvents),
+    metadataPending: true,
+  };
+
+  // Phase 2: everything else in background (account types, identity, token meta)
+  const enrichInBackground = async () => {
+    const ranked = summarizeTraceCounterparties(walletEvents);
+    const [identityMap, tokenMetaMap] = await Promise.all([
+      getBatchIdentity(ranked.slice(0, 500).map((entry) => entry.address)).catch(() => new Map()),
+      getTokenMetadataBatch(
+        [...new Set(walletEvents.map((event) => event.mint).filter(Boolean))].slice(0, 400),
+      ).catch(() => new Map()),
+    ]);
+
+    const enrichedEvents = enrichEvents(walletEvents, identityMap, tokenMetaMap, accountTypeMap);
+    return buildTraceNodeFlows(address, enrichedEvents);
+  };
+
+  enrichInBackground().then((enriched) => {
+    if (onEnriched) onEnriched(enriched);
+  }).catch(() => {});
+
+  return fastResult;
 }
 
 export async function analyzeWallet(address, range = {}) {
@@ -707,9 +737,12 @@ export async function analyzeWallet(address, range = {}) {
   };
 }
 
-export async function analyzeTrace(address, range = {}) {
-  const txs = await fetchTransactions(address, range);
-  return analyzeTraceEvents(address, txs);
+export async function analyzeTrace(address, range = {}, onEnriched, options = {}) {
+  const txLimit = Number(options.limit);
+  const txs = Number.isFinite(txLimit) && txLimit > 0
+    ? await fetchRecentTransactions(address, { limit: txLimit })
+    : await fetchTransactions(address, range);
+  return analyzeTraceEvents(address, txs, onEnriched);
 }
 
 export const analysisInternals = {

@@ -16,6 +16,8 @@ export interface TraceEdgeFlow {
   txCount: number;
   transferCount: number;
   assetCount: number;
+  firstSeen: number;
+  lastSeen: number;
 }
 
 export interface TraceNodeData {
@@ -76,30 +78,20 @@ export function addCounterpartiesToGraph(
     }
 
     // Add directed edge
-    if (direction === "outflow") {
-      const key = `${sourceAddr}:${cp.address}`;
-      if (!newEdgeMap.has(key)) {
-        newEdgeMap.set(key, {
-          from: sourceAddr,
-          to: cp.address,
-          assets: getDirectionalAssets(cp, direction),
-          txCount: getDirectionalTxCount(cp, direction),
-          transferCount: getDirectionalTransferCount(cp, direction),
-          assetCount: getDirectionalAssets(cp, direction).length,
-        });
-      }
-    } else {
-      const key = `${cp.address}:${sourceAddr}`;
-      if (!newEdgeMap.has(key)) {
-        newEdgeMap.set(key, {
-          from: cp.address,
-          to: sourceAddr,
-          assets: getDirectionalAssets(cp, direction),
-          txCount: getDirectionalTxCount(cp, direction),
-          transferCount: getDirectionalTransferCount(cp, direction),
-          assetCount: getDirectionalAssets(cp, direction).length,
-        });
-      }
+    const edgeAssets = getDirectionalAssets(cp, direction);
+    const edgeData: TraceEdgeFlow = {
+      from: direction === "outflow" ? sourceAddr : cp.address,
+      to: direction === "outflow" ? cp.address : sourceAddr,
+      assets: edgeAssets,
+      txCount: getDirectionalTxCount(cp, direction),
+      transferCount: getDirectionalTransferCount(cp, direction),
+      assetCount: edgeAssets.length,
+      firstSeen: cp.firstSeen,
+      lastSeen: cp.lastSeen,
+    };
+    const edgeKey = `${edgeData.from}:${edgeData.to}`;
+    if (!newEdgeMap.has(edgeKey)) {
+      newEdgeMap.set(edgeKey, edgeData);
     }
   }
 
@@ -181,10 +173,21 @@ export function buildTraceGraph(state: TraceState): { nodes: Node[]; edges: Edge
     });
   }
 
+  // Compute per-edge total uiAmount and find max for weight normalization
+  const edgeTotals = new Map<string, number>();
+  let maxEdgeTotal = 0;
+  for (const [key, edge] of edgeMap) {
+    if (!nodeMap.has(edge.from) || !nodeMap.has(edge.to)) continue;
+    const total = edge.assets.reduce((sum, a) => sum + a.uiAmount, 0);
+    edgeTotals.set(key, total);
+    if (total > maxEdgeTotal) maxEdgeTotal = total;
+  }
+
   // Build ReactFlow edges
   const edges: Edge[] = [];
   for (const [key, edge] of edgeMap) {
     if (!nodeMap.has(edge.from) || !nodeMap.has(edge.to)) continue;
+    const weight = maxEdgeTotal > 0 ? (edgeTotals.get(key) ?? 0) / maxEdgeTotal : 0;
     edges.push({
       id: key,
       source: edge.from,
@@ -195,6 +198,9 @@ export function buildTraceGraph(state: TraceState): { nodes: Node[]; edges: Edge
         txCount: edge.txCount,
         transferCount: edge.transferCount,
         assetCount: edge.assetCount,
+        firstSeen: edge.firstSeen,
+        lastSeen: edge.lastSeen,
+        weight,
       },
     });
   }
