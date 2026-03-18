@@ -102,8 +102,17 @@ function describeTracePanelError(error: unknown, fallbackMessage: string): Trace
   const retryAfterSec = Number(retryAfterRaw);
   const txCount = Number(backendError?.details?.txCount);
   const txCap = Number(backendError?.details?.txCap);
+  const accountType = typeof backendError?.details?.accountType === "string"
+    ? backendError.details.accountType
+    : "";
 
   if (code === "trace_wallet_only") {
+    if (accountType === "missing_account") {
+      return {
+        title: "Address Not Active",
+        message: "This address does not currently have a live on-chain account, so Haradrim cannot verify it as a user-owned wallet for trace mode.",
+      };
+    }
     return {
       title: "User Wallets Only",
       message: "Only user-owned wallet addresses can be traced. Programs, PDAs, token accounts, and protocol-owned addresses are not supported.",

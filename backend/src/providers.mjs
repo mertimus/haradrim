@@ -422,6 +422,22 @@ export async function getTxCountForAddress(address) {
   );
 }
 
+function accountDataLength(info) {
+  const space = Number(info?.space);
+  if (Number.isFinite(space) && space >= 0) return space;
+
+  const rawData = info?.data;
+  if (Array.isArray(rawData) && typeof rawData[0] === "string") {
+    try {
+      return Buffer.from(rawData[0], "base64").length;
+    } catch {
+      return 0;
+    }
+  }
+
+  return 0;
+}
+
 export async function getTraceTargetProfile(address) {
   let onCurve = false;
   try {
@@ -436,12 +452,53 @@ export async function getTraceTargetProfile(address) {
     };
   }
 
-  const accountType = (await getAccountTypesParallel([address])).get(address)?.type ?? "unknown";
+  const json = await rpcJson("getMultipleAccounts", [
+    [address],
+    { encoding: "jsonParsed", commitment: "confirmed" },
+  ]);
+  const info = json.result?.value?.[0] ?? null;
+  if (!info) {
+    return {
+      address,
+      accountType: "missing_account",
+      onCurve,
+      walletLike: false,
+      exists: false,
+      executable: false,
+      owner: null,
+      dataLen: 0,
+    };
+  }
+
+  const executable = Boolean(info.executable);
+  const owner = typeof info.owner === "string" ? info.owner : null;
+  const dataLen = accountDataLength(info);
+
+  let accountType = "program_owned";
+  let walletLike = false;
+
+  if (executable) {
+    accountType = "program";
+  } else if (owner === SYSTEM_PROGRAM) {
+    if (dataLen === 0) {
+      accountType = "wallet";
+      walletLike = onCurve;
+    } else {
+      accountType = "system_account";
+    }
+  } else if (owner === TOKEN_PROGRAM || owner === TOKEN_2022_PROGRAM) {
+    accountType = "token";
+  }
+
   return {
     address,
     accountType,
     onCurve,
-    walletLike: accountType === "wallet" && onCurve,
+    walletLike,
+    exists: true,
+    executable,
+    owner,
+    dataLen,
   };
 }
 

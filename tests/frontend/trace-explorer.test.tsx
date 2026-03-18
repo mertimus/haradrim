@@ -308,6 +308,25 @@ describe("TraceExplorer", () => {
     expect(screen.getByText("Only user-owned wallet addresses can be traced. Programs, PDAs, token accounts, and protocol-owned addresses are not supported.")).toBeTruthy();
   });
 
+  it("shows a dedicated missing-account state when the seed address no longer exists on-chain", async () => {
+    const missingAccountError = Object.assign(
+      new Error("Trace mode currently supports user wallets only"),
+      {
+        status: 422,
+        code: "trace_wallet_only",
+        details: {
+          accountType: "missing_account",
+        },
+      },
+    );
+    vi.mocked(getTraceAnalysis).mockRejectedValue(missingAccountError);
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await screen.findByText("Address Not Active");
+    expect(screen.getByText("This address does not currently have a live on-chain account, so Haradrim cannot verify it as a user-owned wallet for trace mode.")).toBeTruthy();
+  });
+
   it("shows a dedicated state when full-history trace exceeds the tx cap", async () => {
     const tooLargeError = Object.assign(
       new Error("Full-history trace is disabled"),

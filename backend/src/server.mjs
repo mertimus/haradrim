@@ -573,6 +573,10 @@ async function handleTraceAnalysis(req, res, address, searchParams, requestId) {
       durationMs: Date.now() - startedAt,
       accountType: targetProfile.accountType,
       onCurve: targetProfile.onCurve,
+      exists: targetProfile.exists,
+      executable: targetProfile.executable,
+      owner: targetProfile.owner,
+      dataLen: targetProfile.dataLen,
     });
     throw createHttpError(
       422,
@@ -581,6 +585,10 @@ async function handleTraceAnalysis(req, res, address, searchParams, requestId) {
       {
         accountType: targetProfile.accountType,
         onCurve: targetProfile.onCurve,
+        exists: targetProfile.exists,
+        executable: targetProfile.executable,
+        owner: targetProfile.owner,
+        dataLen: targetProfile.dataLen,
       },
     );
   }

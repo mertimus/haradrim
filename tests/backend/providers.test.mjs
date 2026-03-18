@@ -130,4 +130,60 @@ describe("providers", () => {
     const count = await getTxCountForAddress("8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L");
     expect(count).toBe(12_345);
   });
+
+  it("classifies a live system-owned zero-data account as a wallet-like trace target", async () => {
+    vi.resetModules();
+    const { getTraceTargetProfile } = await import("../../backend/src/providers.mjs");
+
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          value: [{
+            lamports: 123,
+            data: ["", "base64"],
+            owner: "11111111111111111111111111111111",
+            executable: false,
+            space: 0,
+          }],
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+
+    const profile = await getTraceTargetProfile("86xCnPeV69n6t3DnyGvkKobf9FdN2H9oiVDdaMpo2MMY");
+    expect(profile).toMatchObject({
+      accountType: "wallet",
+      walletLike: true,
+      exists: true,
+      executable: false,
+      owner: "11111111111111111111111111111111",
+      dataLen: 0,
+    });
+  });
+
+  it("classifies a missing account deterministically instead of returning unknown", async () => {
+    vi.resetModules();
+    const { getTraceTargetProfile } = await import("../../backend/src/providers.mjs");
+
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          value: [null],
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+
+    const profile = await getTraceTargetProfile("2m8Mc2ngJCmpbEEoYhwT9U929z6C4CPKLatWnR775u9a");
+    expect(profile).toMatchObject({
+      accountType: "missing_account",
+      walletLike: false,
+      exists: false,
+      dataLen: 0,
+    });
+  });
 });
