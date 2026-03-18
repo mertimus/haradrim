@@ -43,14 +43,14 @@ export default function App() {
         </div>
       </div>
       <header className="hidden md:flex flex-none border-b border-border bg-card/80 px-3 py-1">
-        <div className="flex items-center justify-between">
+        <div className="flex w-full items-center gap-4">
           <div className="flex items-center gap-1.5">
             <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
             <h1 className="font-mono text-xs font-bold tracking-[0.25em] text-primary text-glow-cyan">
               HARADRIM
             </h1>
           </div>
-          <span className="font-mono text-[9px] text-muted-foreground/40">
+          <span className="ml-auto text-right font-mono text-[9px] text-muted-foreground/40">
             Computed at runtime via{" "}
             <a
               href="https://www.helius.dev/docs/rpc/gettransactionsforaddress"
