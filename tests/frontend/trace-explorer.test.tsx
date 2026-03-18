@@ -244,21 +244,21 @@ describe("TraceExplorer", () => {
     expect(screen.queryByText("Inflow Sender")).toBeNull();
   });
 
-  it("shows a dedicated rate-limit state for trace 429s", async () => {
-    const rateLimitError = Object.assign(
-      new Error("Session heavy-request budget exceeded"),
+  it("shows a dedicated busy state for trace 429s", async () => {
+    const busyError = Object.assign(
+      new Error("Too many concurrent trace-analysis requests"),
       {
         status: 429,
-        code: "session_budget_exceeded",
-        details: { retryAfterSec: 37 },
+        code: "route_busy",
+        details: { retryAfterSec: 2 },
       },
     );
-    vi.mocked(getTraceAnalysis).mockRejectedValue(rateLimitError);
+    vi.mocked(getTraceAnalysis).mockRejectedValue(busyError);
 
     render(<TraceExplorer initialAddress={ADDRESS} />);
 
-    await screen.findByText("Trace Temporarily Rate Limited");
-    expect(screen.getByText("Too many heavy trace requests were made recently. Try again in about 37s.")).toBeTruthy();
+    await screen.findByText("Trace Workers Are Busy");
+    expect(screen.getByText("The trace queue is saturated right now. Try again in about 2s.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 });

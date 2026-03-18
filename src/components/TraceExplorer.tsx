@@ -112,10 +112,10 @@ function describeTracePanelError(error: unknown, fallbackMessage: string): Trace
 
   if (status === 429 || message.includes("429")) {
     return {
-      title: "Trace Temporarily Rate Limited",
+      title: "Trace Server Busy",
       message: Number.isFinite(retryAfterSec) && retryAfterSec > 0
-        ? `Too many heavy trace requests were made recently. Try again in about ${formatRetryDelay(retryAfterSec)}.`
-        : "Too many heavy trace requests were made recently. Wait a bit, then retry.",
+        ? `The trace backend rejected this request for now. Try again in about ${formatRetryDelay(retryAfterSec)}.`
+        : "The trace backend rejected this request for now. Wait a bit, then retry.",
       ...(Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? { retryAfterSec } : {}),
     };
   }

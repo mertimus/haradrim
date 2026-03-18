@@ -39,7 +39,7 @@ function readPerItemCache(keys, namespace) {
   const missing = [];
 
   for (const key of keys) {
-    const cached = getCachedValue(getPerItemCacheKey(namespace, key));
+    const cached = getCachedValue(getPerItemCacheKey(namespace, key), { bucket: "metadata" });
     if (cached === null) {
       missing.push(key);
       continue;
@@ -58,6 +58,7 @@ function writePerItemCache(keys, namespace, values, ttlMs) {
       getPerItemCacheKey(namespace, key),
       values.get(key) ?? CACHE_MISS,
       ttlMs,
+      { bucket: "metadata" },
     );
   }
 }

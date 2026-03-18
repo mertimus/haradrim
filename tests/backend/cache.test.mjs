@@ -1,7 +1,10 @@
 // @vitest-environment node
 
 import { afterEach, describe, expect, it } from "vitest";
-import { CACHE_MAX_ENTRIES } from "../../backend/src/config.mjs";
+import {
+  CACHE_MAX_ENTRIES,
+  CACHE_MAX_METADATA_ENTRIES,
+} from "../../backend/src/config.mjs";
 import {
   clearCache,
   getCacheSize,
@@ -31,5 +34,17 @@ describe("cache", () => {
     expect(getCachedValue("hot")).toBe("value");
     expect(getCachedValue("seed:0")).toBeNull();
     expect(getCachedValue("overflow")).toBe("next");
+  });
+
+  it("does not let metadata churn evict default cache entries", () => {
+    setCachedValue("trace-result", { ok: true }, TTL_MS);
+
+    for (let index = 0; index < CACHE_MAX_METADATA_ENTRIES + 1; index += 1) {
+      setCachedValue(`meta:${index}`, index, TTL_MS, { bucket: "metadata" });
+    }
+
+    expect(getCachedValue("trace-result")).toEqual({ ok: true });
+    expect(getCacheSize({ bucket: "metadata" })).toBe(CACHE_MAX_METADATA_ENTRIES);
+    expect(getCachedValue("meta:0", { bucket: "metadata" })).toBeNull();
   });
 });

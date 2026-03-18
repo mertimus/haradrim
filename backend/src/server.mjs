@@ -22,7 +22,7 @@ import {
 } from "./config.mjs";
 import {
   cachedValue,
-  getCacheSize,
+  getCacheStats,
   getCachedValue,
   getInflightValue,
   setCachedValue,
@@ -81,6 +81,7 @@ const ALLOWED_BIRDEYE_PATHS = new Map([
   ["/birdeye-api/defi/token_overview", new Set(["GET"])],
   ["/birdeye-api/defi/v3/token/holder", new Set(["GET"])],
 ]);
+const traceEnrichmentByKey = new Map();
 
 function sha1(input) {
   return createHash("sha1").update(input).digest("hex");
@@ -118,16 +119,86 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function beginTraceEnrichment(cacheKey) {
+  const existing = traceEnrichmentByKey.get(cacheKey);
+  if (existing) return existing;
+
+  let resolvePromise;
+  let rejectPromise;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  const cleanupTimer = setTimeout(() => {
+    const current = traceEnrichmentByKey.get(cacheKey);
+    if (current?.promise !== wrappedPromise) return;
+    traceEnrichmentByKey.delete(cacheKey);
+    current.reject(new Error("trace enrichment timed out"));
+  }, TRACE_ANALYSIS_TTL_MS);
+  const wrappedPromise = promise
+    .catch((error) => {
+      throw error;
+    })
+    .finally(() => {
+      clearTimeout(cleanupTimer);
+      const current = traceEnrichmentByKey.get(cacheKey);
+      if (current?.promise === wrappedPromise) {
+        traceEnrichmentByKey.delete(cacheKey);
+      }
+    });
+  wrappedPromise.catch(() => {});
+
+  const entry = {
+    fastResult: null,
+    promise: wrappedPromise,
+    resolve: resolvePromise,
+    reject: rejectPromise,
+  };
+  traceEnrichmentByKey.set(cacheKey, entry);
+  return entry;
+}
+
+function resolveTraceEnrichment(cacheKey, result) {
+  const entry = traceEnrichmentByKey.get(cacheKey);
+  if (!entry) return;
+  entry.resolve(result);
+}
+
+function rejectTraceEnrichment(cacheKey, error) {
+  const entry = traceEnrichmentByKey.get(cacheKey);
+  if (!entry) return;
+  entry.reject(error);
+}
+
+function clearTraceEnrichmentState() {
+  for (const entry of traceEnrichmentByKey.values()) {
+    entry.reject(new Error("trace enrichment reset"));
+  }
+  traceEnrichmentByKey.clear();
+}
+
 async function waitForTraceEnrichment(cacheKey, timeoutMs = TRACE_ENRICH_WAIT_MS) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     return getCachedValue(cacheKey);
   }
 
+  const pending = traceEnrichmentByKey.get(cacheKey);
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     const cached = getCachedValue(cacheKey);
     if (cached && !cached.metadataPending) {
       return cached;
+    }
+    if (pending) {
+      const remaining = timeoutMs - (Date.now() - startedAt);
+      try {
+        return await Promise.race([
+          pending.promise,
+          sleep(Math.max(remaining, 1)).then(() => null),
+        ]);
+      } catch {
+        return getCachedValue(cacheKey);
+      }
     }
     await sleep(50);
   }
@@ -423,7 +494,8 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
   if (cached) {
     if (cached.metadataPending) {
       const promoted = await waitForTraceEnrichment(cacheKey);
-      sendJson(res, 200, promoted ?? cached);
+      const pending = traceEnrichmentByKey.get(cacheKey);
+      sendJson(res, 200, promoted ?? pending?.fastResult ?? cached);
       return;
     }
     sendJson(res, 200, cached);
@@ -436,26 +508,51 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
     return;
   }
 
+  const pendingEnrichment = traceEnrichmentByKey.get(cacheKey);
+  if (pendingEnrichment) {
+    const promoted = await waitForTraceEnrichment(cacheKey);
+    sendJson(res, 200, promoted ?? pendingEnrichment.fastResult ?? {
+      address,
+      events: [],
+      assets: [],
+      firstSeen: 0,
+      lastSeen: 0,
+      metadataPending: true,
+    });
+    return;
+  }
+
   const result = await withConcurrencyLimit(
     tracePolicy.concurrencyLabel,
     tracePolicy.maxConcurrency,
     () => withInflightValue(cacheKey, async () => {
+      const enrichment = beginTraceEnrichment(cacheKey);
       enforceHeavyRouteBudget(req, res, tracePolicy);
       const result = await analyzeTrace(address, range, (enriched) => {
         try {
           cacheJsonValueIfSmall(cacheKey, enriched, TRACE_ANALYSIS_TTL_MS);
         } catch (err) {
           console.error("[trace-enrich] failed to cache enriched result:", err);
+        } finally {
+          resolveTraceEnrichment(cacheKey, enriched);
         }
       }, { limit });
 
+      enrichment.fastResult = result;
       cacheJsonValueIfSmall(cacheKey, result, TRACE_ANALYSIS_TTL_MS);
+      if (!result.metadataPending) {
+        resolveTraceEnrichment(cacheKey, result);
+      }
       return result;
+    }).catch((error) => {
+      rejectTraceEnrichment(cacheKey, error);
+      throw error;
     }),
   );
   if (result.metadataPending) {
     const promoted = await waitForTraceEnrichment(cacheKey);
-    sendJson(res, 200, promoted ?? result);
+    const pendingResult = traceEnrichmentByKey.get(cacheKey)?.fastResult;
+    sendJson(res, 200, promoted ?? pendingResult ?? result);
     return;
   }
   sendJson(res, 200, result);
@@ -801,7 +898,7 @@ async function handleProxy(req, res, pathname, search) {
   const cacheKey = `proxy:${method}:${pathname}${search}:${sha1(bodyText)}`;
 
   if (ttlMs > 0) {
-    const hit = getCachedValue(cacheKey);
+    const hit = getCachedValue(cacheKey, { bucket: "proxy" });
     if (hit) {
       res.writeHead(hit.status, hit.headers);
       res.end(hit.body);
@@ -831,7 +928,7 @@ async function handleProxy(req, res, pathname, search) {
         status: upstreamRes.status,
         headers,
         body: bodyBuffer,
-      }, ttlMs);
+      }, ttlMs, { bucket: "proxy" });
     }
   };
 
@@ -854,9 +951,11 @@ async function requestHandler(req, res) {
     const pathname = normalizePathname(requestUrl.pathname);
 
     if (pathname === "/healthz") {
+      const cacheStats = getCacheStats();
       sendJson(res, 200, {
         ok: true,
-        cacheEntries: getCacheSize(),
+        cacheEntries: cacheStats.totalEntries,
+        cacheBuckets: cacheStats.buckets,
         uptimeSec: Math.round(process.uptime()),
         guards: getGuardStats(),
       });
@@ -995,3 +1094,9 @@ export function startServer() {
 
   return server;
 }
+
+export const serverInternals = {
+  clearTraceEnrichmentState,
+  requestHandler,
+  waitForTraceEnrichment,
+};

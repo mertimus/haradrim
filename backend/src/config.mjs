@@ -1,5 +1,3 @@
-import { randomBytes } from "node:crypto";
-
 const DEFAULT_RPC = "https://mainnet.helius-rpc.com/";
 export const HELIUS_API_ORIGIN = "https://api.helius.xyz";
 
@@ -28,14 +26,10 @@ export const HELIUS_API_KEY = trimEnv("HELIUS_API_KEY");
 export const HELIUS_RPC_URL = buildHeliusRpcUrl();
 export const HELIUS_ENHANCED_API_ORIGIN = trimEnv("HELIUS_ENHANCED_API_ORIGIN") || "https://api-mainnet.helius-rpc.com";
 export const BIRDEYE_API_KEY = trimEnv("BIRDEYE_API_KEY");
-export const SESSION_COOKIE_NAME = trimEnv("SESSION_COOKIE_NAME") || "haradrim_sid";
-export const SESSION_SECRET = trimEnv("SESSION_SECRET") || randomBytes(32).toString("hex");
-export const SESSION_WINDOW_MS = Number(process.env.SESSION_WINDOW_MS ?? 10 * 60 * 1000);
-export const SESSION_BUDGET_UNITS = Number(process.env.SESSION_BUDGET_UNITS ?? 120);
-export const IP_WINDOW_MS = Number(process.env.IP_WINDOW_MS ?? 10 * 60 * 1000);
-export const IP_BUDGET_UNITS = Number(process.env.IP_BUDGET_UNITS ?? 360);
 
 export const CACHE_MAX_ENTRIES = Number(process.env.CACHE_MAX_ENTRIES ?? 10_000);
+export const CACHE_MAX_METADATA_ENTRIES = Number(process.env.CACHE_MAX_METADATA_ENTRIES ?? 25_000);
+export const CACHE_MAX_PROXY_ENTRIES = Number(process.env.CACHE_MAX_PROXY_ENTRIES ?? 2_000);
 export const CACHE_MAX_BODY_BYTES = Number(process.env.CACHE_MAX_BODY_BYTES ?? 2_000_000);
 export const REQUEST_BODY_LIMIT_BYTES = Number(process.env.REQUEST_BODY_LIMIT_BYTES ?? 32_000);
 export const JSON_PROXY_BODY_LIMIT_BYTES = Number(process.env.JSON_PROXY_BODY_LIMIT_BYTES ?? 64_000);

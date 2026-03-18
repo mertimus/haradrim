@@ -41,28 +41,15 @@ services:
         scope: RUN_TIME
         type: SECRET
         value: REPLACE_WITH_BIRDEYE_API_KEY
-      - key: SESSION_SECRET
-        scope: RUN_TIME
-        type: SECRET
-        value: REPLACE_WITH_SESSION_SECRET
-      - key: SESSION_BUDGET_UNITS
-        scope: RUN_TIME
-        value: "40"
-      - key: IP_BUDGET_UNITS
-        scope: RUN_TIME
-        value: "120"
-      - key: MAX_WALLET_ANALYSIS_CONCURRENCY
-        scope: RUN_TIME
-        value: "2"
-      - key: MAX_TRACE_ANALYSIS_CONCURRENCY
-        scope: RUN_TIME
-        value: "1"
-      - key: MAX_GTFA_RPC_CONCURRENCY
-        scope: RUN_TIME
-        value: "2"
       - key: CACHE_MAX_ENTRIES
         scope: RUN_TIME
-        value: "1000"
+        value: "3000"
+      - key: CACHE_MAX_METADATA_ENTRIES
+        scope: RUN_TIME
+        value: "20000"
+      - key: CACHE_MAX_PROXY_ENTRIES
+        scope: RUN_TIME
+        value: "2000"
       - key: CACHE_MAX_BODY_BYTES
         scope: RUN_TIME
         value: "2000000"
