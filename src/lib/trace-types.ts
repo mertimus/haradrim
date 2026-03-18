@@ -4,6 +4,7 @@ export type TraceAssetKindFilter = "all" | TraceAssetKind;
 
 export const NATIVE_SOL_ASSET_ID = "native:sol";
 export const TRACE_ALL_ASSETS = "__all_assets__";
+export const DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL = 0.0001;
 
 export interface TraceAssetFlow {
   assetId: string;
@@ -88,6 +89,7 @@ export interface TraceFlowFilters {
   dateTo: string;
   assetKind: TraceAssetKindFilter;
   assetId: string;
+  hideSolDust: boolean;
 }
 
 export const DEFAULT_TRACE_FLOW_FILTERS: TraceFlowFilters = {
@@ -97,6 +99,7 @@ export const DEFAULT_TRACE_FLOW_FILTERS: TraceFlowFilters = {
   dateTo: "",
   assetKind: "all",
   assetId: TRACE_ALL_ASSETS,
+  hideSolDust: true,
 };
 
 interface MutableTraceAssetFlow {
@@ -357,6 +360,11 @@ export function filterTraceEvents(
   return events.filter((event) => {
     if (filters.assetKind !== "all" && event.kind !== filters.assetKind) return false;
     if (filters.assetId !== TRACE_ALL_ASSETS && event.assetId !== filters.assetId) return false;
+    if (
+      filters.hideSolDust
+      && event.assetId === NATIVE_SOL_ASSET_ID
+      && event.uiAmount < DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL
+    ) return false;
     if (minThreshold > 0 && event.uiAmount < minThreshold) return false;
     if (maxThreshold < Infinity && event.uiAmount > maxThreshold) return false;
     if (fromTs != null && event.timestamp < fromTs) return false;

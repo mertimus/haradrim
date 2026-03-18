@@ -10,6 +10,8 @@ import type { WalletIdentity } from "@/api";
 import { getTraceAnalysis, parseTransactions } from "@/lib/backend-api";
 import type { EnhancedTransaction } from "@/lib/backend-api";
 import {
+  DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL,
+  NATIVE_SOL_ASSET_ID,
   TRACE_ALL_ASSETS,
   DEFAULT_TRACE_FLOW_FILTERS,
   aggregateTraceCounterparties,
@@ -75,6 +77,18 @@ function formatDateSpan(firstSeen: number, lastSeen: number): string {
 
 function createFreshTraceFlowFilters(): TraceFlowFilters {
   return { ...DEFAULT_TRACE_FLOW_FILTERS };
+}
+
+function countActiveTraceFlowFilters(filters: TraceFlowFilters): number {
+  let count = 0;
+  if (filters.minAmount !== DEFAULT_TRACE_FLOW_FILTERS.minAmount) count += 1;
+  if (filters.maxAmount !== DEFAULT_TRACE_FLOW_FILTERS.maxAmount) count += 1;
+  if (filters.dateFrom !== DEFAULT_TRACE_FLOW_FILTERS.dateFrom) count += 1;
+  if (filters.dateTo !== DEFAULT_TRACE_FLOW_FILTERS.dateTo) count += 1;
+  if (filters.assetKind !== DEFAULT_TRACE_FLOW_FILTERS.assetKind) count += 1;
+  if (filters.assetId !== DEFAULT_TRACE_FLOW_FILTERS.assetId) count += 1;
+  if (filters.hideSolDust !== DEFAULT_TRACE_FLOW_FILTERS.hideSolDust) count += 1;
+  return count;
 }
 
 function summarizeFilteredEvents(events: TraceTransferEvent[]): {
@@ -696,6 +710,13 @@ export function TraceExplorer({
     if (!panelData) return [];
     return filterTraceEvents(panelData.events, flowFilters);
   }, [panelData, flowFilters]);
+  const filteredEventsWithoutDustSuppression = useMemo(() => {
+    if (!panelData) return [];
+    return filterTraceEvents(panelData.events, {
+      ...flowFilters,
+      hideSolDust: false,
+    });
+  }, [panelData, flowFilters]);
 
   const panelCps = useMemo(() => aggregateTraceCounterparties(filteredEvents), [filteredEvents]);
 
@@ -752,17 +773,17 @@ export function TraceExplorer({
   const filteredLastSeen = filteredSummary.lastSeen;
   const outflowTransfers = filteredSummary.outflowTransfers;
   const inflowTransfers = filteredSummary.inflowTransfers;
-  const hasActiveFilters = flowFilters.minAmount !== ""
-    || flowFilters.maxAmount !== ""
-    || flowFilters.dateFrom !== ""
-    || flowFilters.dateTo !== ""
-    || flowFilters.assetId !== TRACE_ALL_ASSETS;
-  const activeFilterCount =
-    (flowFilters.minAmount !== "" ? 1 : 0)
-    + (flowFilters.maxAmount !== "" ? 1 : 0)
-    + (flowFilters.dateFrom !== "" ? 1 : 0)
-    + (flowFilters.dateTo !== "" ? 1 : 0)
-    + (flowFilters.assetId !== TRACE_ALL_ASSETS ? 1 : 0);
+  const activeFilterCount = countActiveTraceFlowFilters(flowFilters);
+  const hasActiveFilters = activeFilterCount > 0;
+  const onlyHiddenSolDust = flowFilters.hideSolDust
+    && filteredEvents.length === 0
+    && filteredEventsWithoutDustSuppression.length > 0
+    && filteredEventsWithoutDustSuppression.every(
+      (event) => (
+        event.assetId === NATIVE_SOL_ASSET_ID
+        && event.uiAmount < DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL
+      )
+    );
 
   const selectedEdgeId = selectedEdge ? `${selectedEdge.source}:${selectedEdge.target}` : null;
 
@@ -1109,6 +1130,7 @@ export function TraceExplorer({
                       )}
                       <button
                         onClick={() => setFiltersExpanded((v) => !v)}
+                        aria-label="Trace filters"
                         className="relative inline-flex items-center rounded border border-border/60 p-1 cursor-pointer text-muted-foreground hover:text-primary transition-colors"
                       >
                         <Filter className="h-3 w-3" />
@@ -1156,6 +1178,18 @@ export function TraceExplorer({
                       onChange={(v) => setFlowFilters((current) => ({ ...current, assetId: v }))}
                     />
 
+                    <label className="flex items-center gap-2 rounded border border-border/40 px-2 py-1.5 text-[10px] text-foreground/80">
+                      <input
+                        type="checkbox"
+                        checked={flowFilters.hideSolDust}
+                        onChange={(e) => setFlowFilters((current) => ({ ...current, hideSolDust: e.target.checked }))}
+                        className="h-3.5 w-3.5 rounded border-border/60 bg-background accent-primary"
+                      />
+                      <span className="font-mono">
+                        Hide SOL dust ({`<${DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL}`} SOL)
+                      </span>
+                    </label>
+
                     <div className="grid grid-cols-2 gap-2">
                       <label className="space-y-1">
                         <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Min Amount</span>
@@ -1193,7 +1227,11 @@ export function TraceExplorer({
                   </div>
                 ) : filteredEvents.length === 0 ? (
                   <div className="flex-1 flex items-center justify-center px-4 text-center">
-                    <span className="font-mono text-[10px] text-muted-foreground">No flows match the current filters</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {onlyHiddenSolDust
+                        ? `Only sub-${DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL} SOL transfers were found. SOL dust is hidden by default.`
+                        : "No flows match the current filters"}
+                    </span>
                   </div>
                 ) : (
                   <div className="flex-1 overflow-y-auto min-h-0">
