@@ -9,12 +9,14 @@ import {
   MAX_TRACE_ANALYSIS_CONCURRENCY,
   MAX_WALLET_ANALYSIS_CONCURRENCY,
   MAX_STABLECOIN_DASHBOARD_CONCURRENCY,
-  ROUTE_CONCURRENCY_WAIT_MS,
 } from "./config.mjs";
 
-const GUARDS_ENABLED = process.env.NODE_ENV === "production";
-
 const concurrencyByRoute = new Map();
+const waitersByRoute = new Map();
+
+function guardsEnabled() {
+  return process.env.NODE_ENV === "production" || process.env.VITEST_FORCE_GUARDS === "1";
+}
 
 export const HEAVY_ROUTE_POLICIES = {
   walletAnalysis: {
@@ -83,10 +85,6 @@ export function getTraceAnalysisPolicy() {
   return HEAVY_ROUTE_POLICIES.traceAnalysis;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export function createHttpError(statusCode, error, message, details = {}) {
   const err = new Error(message);
   err.statusCode = statusCode;
@@ -100,34 +98,48 @@ export function enforceHeavyRouteBudget() {
   // The backend keeps only concurrency/backpressure protection.
 }
 
+async function acquireConcurrencySlot(label, maxConcurrency) {
+  if ((concurrencyByRoute.get(label) ?? 0) < maxConcurrency) {
+    concurrencyByRoute.set(label, (concurrencyByRoute.get(label) ?? 0) + 1);
+    return;
+  }
+
+  await new Promise((resolve) => {
+    const queue = waitersByRoute.get(label) ?? [];
+    queue.push(resolve);
+    waitersByRoute.set(label, queue);
+  });
+}
+
+function releaseConcurrencySlot(label) {
+  const queue = waitersByRoute.get(label);
+  if (queue && queue.length > 0) {
+    const next = queue.shift();
+    if (queue.length === 0) waitersByRoute.delete(label);
+    next?.();
+    return;
+  }
+
+  const current = concurrencyByRoute.get(label) ?? 1;
+  if (current <= 1) concurrencyByRoute.delete(label);
+  else concurrencyByRoute.set(label, current - 1);
+}
+
 export async function withConcurrencyLimit(label, maxConcurrency, task) {
-  if (!GUARDS_ENABLED) {
+  if (!guardsEnabled()) {
     return task();
   }
 
-  const startedAt = Date.now();
-  while ((concurrencyByRoute.get(label) ?? 0) >= maxConcurrency) {
-    if (Date.now() - startedAt >= ROUTE_CONCURRENCY_WAIT_MS) {
-      throw createHttpError(429, "route_busy", `Too many concurrent ${label} requests`, {
-        routeKey: label,
-        retryAfterSec: 2,
-      });
-    }
-    await sleep(50);
-  }
-
-  concurrencyByRoute.set(label, (concurrencyByRoute.get(label) ?? 0) + 1);
+  await acquireConcurrencySlot(label, maxConcurrency);
   try {
     return await task();
   } finally {
-    const current = concurrencyByRoute.get(label) ?? 1;
-    if (current <= 1) concurrencyByRoute.delete(label);
-    else concurrencyByRoute.set(label, current - 1);
+    releaseConcurrencySlot(label);
   }
 }
 
 export function getGuardStats() {
-  if (!GUARDS_ENABLED) {
+  if (!guardsEnabled()) {
     return {
       enabled: false,
       concurrency: {},
@@ -137,6 +149,11 @@ export function getGuardStats() {
   return {
     enabled: true,
     concurrency: Object.fromEntries(concurrencyByRoute),
+    queued: Object.fromEntries(
+      Array.from(waitersByRoute.entries())
+        .filter(([, queue]) => queue.length > 0)
+        .map(([label, queue]) => [label, queue.length]),
+    ),
   };
 }
 
