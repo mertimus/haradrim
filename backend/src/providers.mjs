@@ -26,6 +26,7 @@ import {
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const OWNER_MINT_TOKEN_ACCOUNTS_TTL_MS = 15 * 60 * 1000;
 const IDENTITY_TTL_MS = 30 * 60 * 1000;
 const TOKEN_METADATA_TTL_MS = 60 * 60 * 1000;
@@ -36,6 +37,10 @@ const upstreamFetchWaiters = [];
 
 function getPerItemCacheKey(namespace, key) {
   return `${namespace}:${key}`;
+}
+
+function isValidSolanaAddress(value) {
+  return typeof value === "string" && SOLANA_ADDRESS_REGEX.test(value);
 }
 
 function readPerItemCache(keys, namespace) {
@@ -522,7 +527,7 @@ export async function fetchRecentTransactions(address, options = {}) {
 }
 
 export async function getBatchIdentity(addresses) {
-  const unique = [...new Set(addresses)].filter(Boolean);
+  const unique = [...new Set(addresses)].filter(isValidSolanaAddress);
   if (unique.length === 0) return new Map();
 
   const { hits, missing } = readPerItemCache(unique, "identity:item");

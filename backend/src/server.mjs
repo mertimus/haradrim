@@ -1,5 +1,5 @@
 import http from "node:http";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   BALANCE_HISTORY_TTL_MS,
   BIRDEYE_API_KEY,
@@ -82,9 +82,69 @@ const ALLOWED_BIRDEYE_PATHS = new Map([
   ["/birdeye-api/defi/v3/token/holder", new Set(["GET"])],
 ]);
 const traceEnrichmentByKey = new Map();
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 function sha1(input) {
   return createHash("sha1").update(input).digest("hex");
+}
+
+function firstHeaderValue(value) {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return typeof value === "string" ? value : "";
+}
+
+function baseRequestLog(req, requestId) {
+  const userAgent = firstHeaderValue(req.headers["user-agent"]);
+  return {
+    requestId,
+    method: req.method ?? "GET",
+    url: req.url ?? "/",
+    cfRay: firstHeaderValue(req.headers["cf-ray"]) || undefined,
+    userAgent: userAgent ? userAgent.slice(0, 160) : undefined,
+  };
+}
+
+function sanitizeSnippet(value, maxLength = 200) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function summarizeProxyBody(pathname, bodyText) {
+  if (!bodyText) return undefined;
+
+  try {
+    const payload = JSON.parse(bodyText);
+    if (pathname === "/helius-api/v1/wallet/batch-identity") {
+      const addresses = Array.isArray(payload?.addresses) ? payload.addresses : [];
+      const invalidAddresses = addresses
+        .filter((value) => typeof value !== "string" || !SOLANA_ADDRESS_REGEX.test(value));
+      const invalidAddressSamples = invalidAddresses.slice(0, 5);
+
+      return {
+        addressCount: addresses.length,
+        invalidAddressCount: invalidAddresses.length,
+        ...(invalidAddressSamples.length > 0 ? { invalidAddressSamples } : {}),
+      };
+    }
+
+    if (pathname === "/helius-rpc") {
+      return typeof payload?.method === "string" ? { rpcMethod: payload.method } : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function logTraceRequest(stage, req, requestId, details = {}) {
+  console.info("[trace-request]", JSON.stringify({
+    ...baseRequestLog(req, requestId),
+    stage,
+    ...details,
+  }));
 }
 
 function sendJson(res, status, payload, extraHeaders = {}) {
@@ -485,32 +545,65 @@ async function handleWalletAnalysis(req, res, address, searchParams) {
   sendJson(res, 200, result);
 }
 
-async function handleTraceAnalysis(req, res, address, searchParams) {
+async function handleTraceAnalysis(req, res, address, searchParams, requestId) {
   const range = parseRange(searchParams);
   const limit = searchParams.get("limit");
   const tracePolicy = getTraceAnalysisPolicy(limit);
   const cacheKey = `trace-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}:${limit ?? "full"}`;
+  const startedAt = Date.now();
+  const traceDetails = {
+    address,
+    limit: limit ?? "full",
+    start: range.start ?? null,
+    end: range.end ?? null,
+  };
   const cached = getCachedValue(cacheKey);
   if (cached) {
     if (cached.metadataPending) {
       const promoted = await waitForTraceEnrichment(cacheKey);
       const pending = traceEnrichmentByKey.get(cacheKey);
+      logTraceRequest("cache-hit-pending", req, requestId, {
+        ...traceDetails,
+        durationMs: Date.now() - startedAt,
+        metadataPending: true,
+        resolved: Boolean(promoted),
+        eventCount: promoted?.events?.length ?? pending?.fastResult?.events?.length ?? cached.events.length,
+      });
       sendJson(res, 200, promoted ?? pending?.fastResult ?? cached);
       return;
     }
+    logTraceRequest("cache-hit", req, requestId, {
+      ...traceDetails,
+      durationMs: Date.now() - startedAt,
+      metadataPending: false,
+      eventCount: cached.events.length,
+    });
     sendJson(res, 200, cached);
     return;
   }
 
   const pending = getInflightValue(cacheKey);
   if (pending) {
-    sendJson(res, 200, await pending);
+    const joined = await pending;
+    logTraceRequest("join-inflight", req, requestId, {
+      ...traceDetails,
+      durationMs: Date.now() - startedAt,
+      metadataPending: Boolean(joined?.metadataPending),
+      eventCount: joined?.events?.length ?? 0,
+    });
+    sendJson(res, 200, joined);
     return;
   }
 
   const pendingEnrichment = traceEnrichmentByKey.get(cacheKey);
   if (pendingEnrichment) {
     const promoted = await waitForTraceEnrichment(cacheKey);
+    logTraceRequest("join-enrichment", req, requestId, {
+      ...traceDetails,
+      durationMs: Date.now() - startedAt,
+      metadataPending: !Boolean(promoted),
+      eventCount: promoted?.events?.length ?? pendingEnrichment.fastResult?.events?.length ?? 0,
+    });
     sendJson(res, 200, promoted ?? pendingEnrichment.fastResult ?? {
       address,
       events: [],
@@ -522,6 +615,7 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
     return;
   }
 
+  logTraceRequest("analyze-start", req, requestId, traceDetails);
   const result = await withConcurrencyLimit(
     tracePolicy.concurrencyLabel,
     tracePolicy.maxConcurrency,
@@ -552,9 +646,22 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
   if (result.metadataPending) {
     const promoted = await waitForTraceEnrichment(cacheKey);
     const pendingResult = traceEnrichmentByKey.get(cacheKey)?.fastResult;
+    logTraceRequest("analyze-complete", req, requestId, {
+      ...traceDetails,
+      durationMs: Date.now() - startedAt,
+      metadataPending: true,
+      eventCount: promoted?.events?.length ?? pendingResult?.events?.length ?? result.events.length,
+      promoted: Boolean(promoted),
+    });
     sendJson(res, 200, promoted ?? pendingResult ?? result);
     return;
   }
+  logTraceRequest("analyze-complete", req, requestId, {
+    ...traceDetails,
+    durationMs: Date.now() - startedAt,
+    metadataPending: false,
+    eventCount: result.events.length,
+  });
   sendJson(res, 200, result);
 }
 
@@ -865,7 +972,7 @@ async function handleStablecoinDashboard(req, res) {
   sendJson(res, 200, result);
 }
 
-async function handleProxy(req, res, pathname, search) {
+async function handleProxy(req, res, pathname, search, requestId) {
   const method = req.method ?? "GET";
   const normalizedPath = normalizePathname(pathname);
   let bodyText = "";
@@ -915,6 +1022,20 @@ async function handleProxy(req, res, pathname, search) {
 
     const bodyBuffer = Buffer.from(await upstreamRes.arrayBuffer());
     const headers = responseHeaders(upstreamRes.headers, bodyBuffer.length);
+    if (!upstreamRes.ok) {
+      const upstreamUrl = new URL(upstream.url);
+      console.warn("[proxy-upstream-error]", JSON.stringify({
+        ...baseRequestLog(req, requestId),
+        method,
+        path: normalizedPath,
+        upstreamKind: upstream.kind,
+        upstreamStatus: upstreamRes.status,
+        upstreamOrigin: upstreamUrl.origin,
+        upstreamPathname: upstreamUrl.pathname,
+        bodySummary: summarizeProxyBody(normalizedPath, bodyText),
+        upstreamBodySnippet: sanitizeSnippet(bodyBuffer.toString("utf8")),
+      }));
+    }
     res.writeHead(upstreamRes.status, headers);
     res.end(bodyBuffer);
 
@@ -946,6 +1067,8 @@ async function handleProxy(req, res, pathname, search) {
 }
 
 async function requestHandler(req, res) {
+  const requestId = randomUUID();
+  res.setHeader("x-request-id", requestId);
   try {
     const requestUrl = new URL(req.url ?? "/", "http://localhost");
     const pathname = normalizePathname(requestUrl.pathname);
@@ -972,7 +1095,7 @@ async function requestHandler(req, res) {
     const traceMatch = matchTraceAnalysis(pathname);
     if (traceMatch) {
       assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
-      await handleTraceAnalysis(req, res, traceMatch[1], requestUrl.searchParams);
+      await handleTraceAnalysis(req, res, traceMatch[1], requestUrl.searchParams, requestId);
       return;
     }
 
@@ -1066,7 +1189,7 @@ async function requestHandler(req, res) {
       return;
     }
 
-    await handleProxy(req, res, requestUrl.pathname, requestUrl.search);
+    await handleProxy(req, res, requestUrl.pathname, requestUrl.search, requestId);
   } catch (error) {
     const statusCode = Number(error?.statusCode ?? 502);
     const errorCode = error?.error ?? "request_failed";
@@ -1074,6 +1197,18 @@ async function requestHandler(req, res) {
     const extraHeaders = details?.retryAfterSec
       ? { "retry-after": String(details.retryAfterSec) }
       : {};
+    const logPayload = {
+      ...baseRequestLog(req, requestId),
+      statusCode,
+      errorCode,
+      details,
+      message: error instanceof Error ? error.message : "unknown error",
+    };
+    if (statusCode >= 500) {
+      console.error("[api-error]", JSON.stringify(logPayload));
+    } else if (statusCode >= 400) {
+      console.warn("[api-request-failed]", JSON.stringify(logPayload));
+    }
 
     sendJson(res, statusCode, {
       error: errorCode,

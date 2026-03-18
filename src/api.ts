@@ -32,6 +32,15 @@ const connection = new Connection(RPC_URL);
 const BASE58_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const PREFERRED_SOL_DOMAIN_NAMESPACE = "preferredSns";
 
+function isValidSolanaAddress(value: string): boolean {
+  if (!BASE58_REGEX.test(value)) return false;
+  try {
+    return new PublicKey(value).toBase58() === value;
+  } catch {
+    return false;
+  }
+}
+
 function isSolDomainInput(value: string): boolean {
   return value.length > 4 && !/\s/.test(value) && value.toLowerCase().endsWith(".sol");
 }
@@ -87,6 +96,10 @@ function applyPreferredSolDomain(address: string, identity: WalletIdentity | nul
 
 function withHeliusApiKey(url: string): string {
   return url;
+}
+
+function logBatchIdentityFailure(context: Record<string, unknown>): void {
+  console.warn("[batch-identity-request-failed]", context);
 }
 
 // --- Raw RPC transaction from getTransactionsForAddress ---
@@ -898,7 +911,16 @@ async function _getBatchIdentity(
 ): Promise<Record<string, WalletIdentity>> {
   const map: Record<string, WalletIdentity> = {};
   if (addresses.length === 0) return map;
-  const uniqueAddresses = [...new Set(addresses)].filter(Boolean);
+  const invalidAddresses = [...new Set(addresses)].filter((address) => Boolean(address) && !isValidSolanaAddress(address));
+  const uniqueAddresses = [...new Set(addresses)].filter(isValidSolanaAddress);
+  if (invalidAddresses.length > 0) {
+    logBatchIdentityFailure({
+      stage: "input-pruned",
+      requestedCount: addresses.length,
+      validCount: uniqueAddresses.length,
+      invalidAddressSamples: invalidAddresses.slice(0, 5),
+    });
+  }
 
   const chunks: string[][] = [];
   for (let i = 0; i < uniqueAddresses.length; i += 100) {
@@ -916,10 +938,27 @@ async function _getBatchIdentity(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ addresses: chunk }),
         });
-        if (!res.ok) return [] as RawWalletIdentityResponse[];
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          logBatchIdentityFailure({
+            stage: "http-error",
+            status: res.status,
+            requestId: res.headers.get("x-request-id") ?? undefined,
+            addressCount: chunk.length,
+            addressSamples: chunk.slice(0, 5),
+            bodySnippet: body.slice(0, 200),
+          });
+          return [] as RawWalletIdentityResponse[];
+        }
         const data = await res.json();
         return Array.isArray(data) ? data as RawWalletIdentityResponse[] : [];
-      } catch {
+      } catch (error) {
+        logBatchIdentityFailure({
+          stage: "exception",
+          addressCount: chunk.length,
+          addressSamples: chunk.slice(0, 5),
+          message: error instanceof Error ? error.message : String(error),
+        });
         return [] as RawWalletIdentityResponse[];
       }
     },
@@ -959,7 +998,7 @@ async function _getBatchIdentity(
 export async function getBatchIdentity(
   addresses: string[],
 ): Promise<Map<string, WalletIdentity>> {
-  const uniqueAddresses = [...new Set(addresses)].filter(Boolean);
+  const uniqueAddresses = [...new Set(addresses)].filter(isValidSolanaAddress);
   const key = uniqueAddresses.slice().sort().join(",");
   let obj = await cached("batchId", key, TTL_IDENTITY, () => _getBatchIdentity(uniqueAddresses));
 

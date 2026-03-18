@@ -137,6 +137,19 @@ function describeTracePanelError(error: unknown, fallbackMessage: string): Trace
   };
 }
 
+function logTraceClientFailure(phase: string, address: string, error: unknown): void {
+  const backendError = error as BackendApiError | undefined;
+  console.error("[trace-client-error]", {
+    phase,
+    address,
+    status: backendError?.status,
+    code: backendError?.code,
+    requestId: backendError?.requestId,
+    details: backendError?.details,
+    message: error instanceof Error ? error.message : String(error),
+  });
+}
+
 function countActiveTraceFlowFilters(filters: TraceFlowFilters): number {
   let count = 0;
   if (filters.minAmount !== DEFAULT_TRACE_FLOW_FILTERS.minAmount) count += 1;
@@ -652,7 +665,10 @@ export function TraceExplorer({
       })
       .catch((err) => {
         if (rid !== requestIdRef.current) return;
-        console.warn("Failed to fetch trace seed identity:", err);
+        console.warn("[trace-seed-identity-failed]", {
+          address,
+          message: err instanceof Error ? err.message : String(err),
+        });
       });
   }, [clearPanelSubscription, onRouteAddressChange, setTraceGraphState]);
 
@@ -682,7 +698,7 @@ export function TraceExplorer({
       if (rid === panelRequestIdRef.current) {
         setPanelError(describeTracePanelError(err, "Failed to fetch trace flows"));
       }
-      console.error("Failed to fetch trace flows:", err);
+      logTraceClientFailure("node-quick-scan", address, err);
     } finally {
       if (rid === panelRequestIdRef.current) setPanelLoading(false);
     }
@@ -730,6 +746,7 @@ export function TraceExplorer({
       if (rid === panelRequestIdRef.current) {
         setPanelError(describeTracePanelError(err, "Full scan failed"));
       }
+      logTraceClientFailure("node-full-scan", address, err);
     } finally {
       if (rid === panelRequestIdRef.current) setPanelLoading(false);
     }

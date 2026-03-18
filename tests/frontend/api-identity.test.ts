@@ -79,4 +79,24 @@ describe("api identity normalization", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("filters invalid addresses out of batch identity requests", async () => {
+    const address = "8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      expect(url).toContain("/helius-api/v1/wallet/batch-identity");
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBe(JSON.stringify({ addresses: [address] }));
+      return new Response(
+        JSON.stringify([{ address, name: "Valid Wallet", category: "unknown", tags: [] }]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const identities = await getBatchIdentity([address, "", "toly.sol", "not-a-solana-address"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect([...identities.keys()]).toEqual([address]);
+  });
 });

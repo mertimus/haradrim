@@ -58,4 +58,35 @@ describe("providers", () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(2);
   });
+
+  it("filters invalid addresses out of batch identity requests", async () => {
+    vi.resetModules();
+    const { getBatchIdentity } = await import("../../backend/src/providers.mjs");
+
+    global.fetch = vi.fn(async (_input, init) => {
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBe(JSON.stringify({
+        addresses: ["8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L"],
+      }));
+      return new Response(
+        JSON.stringify([{
+          address: "8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L",
+          name: "Valid Wallet",
+          category: "unknown",
+          tags: [],
+        }]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const result = await getBatchIdentity([
+      "8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L",
+      "",
+      "toly.sol",
+      "not-a-solana-address",
+    ]);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect([...result.keys()]).toEqual(["8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L"]);
+  });
 });

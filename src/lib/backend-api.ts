@@ -12,6 +12,7 @@ export interface BackendApiError extends Error {
   status?: number;
   code?: string;
   details?: Record<string, unknown>;
+  requestId?: string;
 }
 
 export interface WalletAnalysisResult {
@@ -310,6 +311,7 @@ async function fetchJson<T>(path: string, options?: FetchJsonOptions & { method?
       init.headers = { "content-type": "application/json" };
     }
     const res = await fetch(`${API_BASE_URL}${path}`, init);
+    const requestId = res.headers.get("x-request-id") ?? undefined;
     if (maybeRedirectForCloudflareChallenge(res, `${API_BASE_URL}${path}`)) {
       return await waitForCloudflareChallengeNavigation<T>();
     }
@@ -336,6 +338,7 @@ async function fetchJson<T>(path: string, options?: FetchJsonOptions & { method?
       error.status = res.status;
       error.code = code;
       error.details = details;
+      error.requestId = requestId;
       throw error;
     }
     const payload = text ? JSON.parse(text) : null;
