@@ -1,3 +1,4 @@
+import { PublicKey } from "@solana/web3.js";
 import {
   FETCH_TIMEOUT_MS,
   GTFA_SIGNATURE_PAGE_LIMIT,
@@ -12,6 +13,7 @@ import {
   MAX_SLICE_CONCURRENCY,
   MAX_TRANSACTION_SLICES,
   MAX_UPSTREAM_FETCH_CONCURRENCY,
+  ORB_AUTH_TOKEN,
   RATE_LIMIT_RETRIES,
   TARGET_GTFA_TXS_PER_SLICE,
 } from "./config.mjs";
@@ -367,6 +369,79 @@ async function probeTimeline(address, start, end) {
   return {
     firstBlockTime,
     estimatedTxCount: Math.max(estimate, recentPage.txs.length),
+  };
+}
+
+function parseTxCountResult(result) {
+  if (typeof result === "number" && Number.isFinite(result)) return result;
+  if (typeof result?.count === "number" && Number.isFinite(result.count)) return result.count;
+  if (typeof result?.txCount === "number" && Number.isFinite(result.txCount)) return result.txCount;
+  if (typeof result?.signatureCount === "number" && Number.isFinite(result.signatureCount)) return result.signatureCount;
+  if (typeof result?.value === "number" && Number.isFinite(result.value)) return result.value;
+  return null;
+}
+
+export async function getTxCountForAddress(address) {
+  const cacheKey = `txCount:${address}`;
+  return cachedValue(
+    cacheKey,
+    10 * 60 * 1000,
+    async () => {
+      if (ORB_AUTH_TOKEN) {
+        const json = await retryingJsonRequest(() =>
+          fetchWithTimeout(HELIUS_RPC_URL, {
+            method: "POST",
+            headers: {
+              accept: "application/json",
+              "content-type": "application/json",
+              "x-orb-auth": ORB_AUTH_TOKEN,
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "getTxAmountForAddress",
+              params: {
+                address,
+                config: {
+                  commitment: "finalized",
+                },
+              },
+            }),
+          }),
+        );
+
+        const parsed = parseTxCountResult(json?.result);
+        if (parsed !== null) return parsed;
+        throw new Error("getTxAmountForAddress returned an invalid result");
+      }
+
+      const probe = await probeTimeline(address, undefined, undefined);
+      return probe?.estimatedTxCount ?? 0;
+    },
+    { bucket: "metadata" },
+  );
+}
+
+export async function getTraceTargetProfile(address) {
+  let onCurve = false;
+  try {
+    const pubkey = new PublicKey(address);
+    onCurve = PublicKey.isOnCurve(pubkey.toBytes());
+  } catch {
+    return {
+      address,
+      accountType: "invalid",
+      onCurve: false,
+      walletLike: false,
+    };
+  }
+
+  const accountType = (await getAccountTypesParallel([address])).get(address)?.type ?? "unknown";
+  return {
+    address,
+    accountType,
+    onCurve,
+    walletLike: accountType === "wallet" && onCurve,
   };
 }
 

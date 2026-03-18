@@ -56,6 +56,9 @@ services:
       - key: TRACE_ANALYSIS_TTL_MS
         scope: RUN_TIME
         value: "3600000"
+      - key: TRACE_FULL_HISTORY_TX_CAP
+        scope: RUN_TIME
+        value: "25000"
       - key: MAX_UPSTREAM_FETCH_CONCURRENCY
         scope: RUN_TIME
         value: "24"

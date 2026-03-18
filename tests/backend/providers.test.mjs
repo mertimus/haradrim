@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const originalFetch = global.fetch;
 const originalRateLimitRetries = process.env.RATE_LIMIT_RETRIES;
 const originalMaxUpstreamFetchConcurrency = process.env.MAX_UPSTREAM_FETCH_CONCURRENCY;
+const originalOrbAuthToken = process.env.ORB_AUTH_TOKEN;
+const originalHeliusRpcUrl = process.env.HELIUS_RPC_URL;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -13,6 +15,10 @@ afterEach(() => {
   else process.env.RATE_LIMIT_RETRIES = originalRateLimitRetries;
   if (originalMaxUpstreamFetchConcurrency == null) delete process.env.MAX_UPSTREAM_FETCH_CONCURRENCY;
   else process.env.MAX_UPSTREAM_FETCH_CONCURRENCY = originalMaxUpstreamFetchConcurrency;
+  if (originalOrbAuthToken == null) delete process.env.ORB_AUTH_TOKEN;
+  else process.env.ORB_AUTH_TOKEN = originalOrbAuthToken;
+  if (originalHeliusRpcUrl == null) delete process.env.HELIUS_RPC_URL;
+  else process.env.HELIUS_RPC_URL = originalHeliusRpcUrl;
 });
 
 describe("providers", () => {
@@ -88,5 +94,40 @@ describe("providers", () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect([...result.keys()]).toEqual(["8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L"]);
+  });
+
+  it("uses the Orb tx-count endpoint with the auth header when configured", async () => {
+    process.env.ORB_AUTH_TOKEN = "orb-secret";
+    process.env.HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=test-key";
+    vi.resetModules();
+    const { getTxCountForAddress } = await import("../../backend/src/providers.mjs");
+
+    global.fetch = vi.fn(async (input, init) => {
+      expect(String(input)).toBe("https://mainnet.helius-rpc.com/?api-key=test-key");
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toMatchObject({
+        accept: "application/json",
+        "content-type": "application/json",
+        "x-orb-auth": "orb-secret",
+      });
+      expect(init?.body).toBe(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTxAmountForAddress",
+        params: {
+          address: "8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L",
+          config: {
+            commitment: "finalized",
+          },
+        },
+      }));
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, result: { count: 12_345 } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const count = await getTxCountForAddress("8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L");
+    expect(count).toBe(12_345);
   });
 });

@@ -26,6 +26,7 @@ export const HELIUS_API_KEY = trimEnv("HELIUS_API_KEY");
 export const HELIUS_RPC_URL = buildHeliusRpcUrl();
 export const HELIUS_ENHANCED_API_ORIGIN = trimEnv("HELIUS_ENHANCED_API_ORIGIN") || "https://api-mainnet.helius-rpc.com";
 export const BIRDEYE_API_KEY = trimEnv("BIRDEYE_API_KEY");
+export const ORB_AUTH_TOKEN = trimEnv("ORB_AUTH_TOKEN");
 
 export const CACHE_MAX_ENTRIES = Number(process.env.CACHE_MAX_ENTRIES ?? 10_000);
 export const CACHE_MAX_METADATA_ENTRIES = Number(process.env.CACHE_MAX_METADATA_ENTRIES ?? 25_000);
@@ -40,6 +41,7 @@ export const PROXY_TTL_MS = Number(process.env.PROXY_TTL_MS ?? 5 * 60 * 1000);
 export const WALLET_ANALYSIS_TTL_MS = Number(process.env.WALLET_ANALYSIS_TTL_MS ?? 5 * 60 * 1000);
 export const TRACE_ANALYSIS_TTL_MS = Number(process.env.TRACE_ANALYSIS_TTL_MS ?? 60 * 60 * 1000);
 export const TRACE_ENRICH_WAIT_MS = Number(process.env.TRACE_ENRICH_WAIT_MS ?? 1000);
+export const TRACE_FULL_HISTORY_TX_CAP = Number(process.env.TRACE_FULL_HISTORY_TX_CAP ?? 25_000);
 export const BALANCE_HISTORY_TTL_MS = Number(process.env.BALANCE_HISTORY_TTL_MS ?? 5 * 60 * 1000);
 export const ENHANCED_HISTORY_TTL_MS = Number(process.env.ENHANCED_HISTORY_TTL_MS ?? 10 * 60 * 1000);
 export const PROVENANCE_ANALYSIS_TTL_MS = Number(

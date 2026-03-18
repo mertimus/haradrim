@@ -90,6 +90,15 @@ describe("TraceExplorer", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
+  it("loads the initial seed trace as a quick scan", async () => {
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await screen.findByTestId("trace-graph");
+    await waitFor(() => {
+      expect(getTraceAnalysis).toHaveBeenCalledWith(ADDRESS, undefined, { limit: 2000 });
+    });
+  });
+
   it("hides SOL dust by default and lets the user reveal it", async () => {
     vi.mocked(getTraceAnalysis).mockResolvedValue(createFlows([{
       signature: "dust-1",
@@ -283,6 +292,42 @@ describe("TraceExplorer", () => {
     expect(screen.getByText("The upstream Solana data provider is saturated right now. Try again shortly.")).toBeTruthy();
   });
 
+  it("shows a wallet-only state for non-user-wallet trace targets", async () => {
+    const walletOnlyError = Object.assign(
+      new Error("Trace mode currently supports user wallets only"),
+      {
+        status: 422,
+        code: "trace_wallet_only",
+      },
+    );
+    vi.mocked(getTraceAnalysis).mockRejectedValue(walletOnlyError);
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await screen.findByText("User Wallets Only");
+    expect(screen.getByText("Only user-owned wallet addresses can be traced. Programs, PDAs, token accounts, and protocol-owned addresses are not supported.")).toBeTruthy();
+  });
+
+  it("shows a dedicated state when full-history trace exceeds the tx cap", async () => {
+    const tooLargeError = Object.assign(
+      new Error("Full-history trace is disabled"),
+      {
+        status: 422,
+        code: "trace_too_large",
+        details: {
+          txCount: 31_245,
+          txCap: 25_000,
+        },
+      },
+    );
+    vi.mocked(getTraceAnalysis).mockRejectedValue(tooLargeError);
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await screen.findByText("Full History Too Large");
+    expect(screen.getByText("This wallet has about 31,245 transactions. Interactive full-history trace is capped at 25,000. Stay on quick scan or narrow the time range.")).toBeTruthy();
+  });
+
   it("resolves visible counterparty labels client-side without showing a global enrichment banner", async () => {
     vi.mocked(getTraceAnalysis).mockResolvedValue(createFlows([{
       signature: "label-1",
@@ -357,5 +402,29 @@ describe("TraceExplorer", () => {
     fireEvent.click(await screen.findByText("Token Sender"));
 
     await screen.findByText("TOK");
+  });
+
+  it("marks non-wallet counterparties as wallet-only instead of allowing expansion", async () => {
+    vi.mocked(getTraceAnalysis).mockResolvedValue(createFlows([{
+      signature: "program-1",
+      timestamp: 1712620800,
+      direction: "outflow",
+      counterparty: COUNTERPARTY,
+      counterpartyLabel: "Program Counterparty",
+      counterpartyAccountType: "program",
+      assetId: NATIVE_SOL_ASSET_ID,
+      kind: "native",
+      decimals: 9,
+      rawAmount: "5000000",
+      uiAmount: 0.005,
+      symbol: "SOL",
+      name: "Native SOL",
+    }]));
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    fireEvent.click(await screen.findByText("Outflow →"));
+    await screen.findByText("Program Counterparty");
+    expect(screen.getByText("wallet only")).toBeTruthy();
   });
 });

@@ -11,6 +11,7 @@ import {
   PORT,
   PROXY_TTL_MS,
   REQUEST_BODY_LIMIT_BYTES,
+  TRACE_FULL_HISTORY_TX_CAP,
   TRACE_ENRICH_WAIT_MS,
   TRACE_ANALYSIS_TTL_MS,
   WALLET_ANALYSIS_TTL_MS,
@@ -45,7 +46,13 @@ import { buildTokenHolderSnapshot } from "./token-snapshot-core.mjs";
 import { analyzeTokenForensics } from "./token-forensics-core.mjs";
 import { analyzeWalletPairSignals } from "./wallet-pair-signals.mjs";
 import { buildStablecoinDashboard } from "./stablecoin-dashboard-core.mjs";
-import { buildWalletApiUrl, fetchWithTimeout, parseEnhancedTransactions } from "./providers.mjs";
+import {
+  buildWalletApiUrl,
+  fetchWithTimeout,
+  getTraceTargetProfile,
+  getTxCountForAddress,
+  parseEnhancedTransactions,
+} from "./providers.mjs";
 
 const ALLOWED_RPC_METHODS = new Map([
   ["getTransactionsForAddress", { heavy: true }],
@@ -549,6 +556,8 @@ async function handleTraceAnalysis(req, res, address, searchParams, requestId) {
   const range = parseRange(searchParams);
   const limit = searchParams.get("limit");
   const tracePolicy = getTraceAnalysisPolicy(limit);
+  const parsedLimit = Number(limit);
+  const fullHistoryRequested = !Number.isFinite(parsedLimit) || parsedLimit <= 0;
   const cacheKey = `trace-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}:${limit ?? "full"}`;
   const startedAt = Date.now();
   const traceDetails = {
@@ -557,6 +566,46 @@ async function handleTraceAnalysis(req, res, address, searchParams, requestId) {
     start: range.start ?? null,
     end: range.end ?? null,
   };
+  const targetProfile = await getTraceTargetProfile(address);
+  if (!targetProfile.walletLike) {
+    logTraceRequest("rejected-non-wallet", req, requestId, {
+      ...traceDetails,
+      durationMs: Date.now() - startedAt,
+      accountType: targetProfile.accountType,
+      onCurve: targetProfile.onCurve,
+    });
+    throw createHttpError(
+      422,
+      "trace_wallet_only",
+      "Trace mode currently supports user wallets only",
+      {
+        accountType: targetProfile.accountType,
+        onCurve: targetProfile.onCurve,
+      },
+    );
+  }
+
+  if (fullHistoryRequested) {
+    const txCount = await getTxCountForAddress(address);
+    if (txCount > TRACE_FULL_HISTORY_TX_CAP) {
+      logTraceRequest("rejected-tx-cap", req, requestId, {
+        ...traceDetails,
+        durationMs: Date.now() - startedAt,
+        txCount,
+        txCap: TRACE_FULL_HISTORY_TX_CAP,
+      });
+      throw createHttpError(
+        422,
+        "trace_too_large",
+        `Full-history trace is disabled for wallets with more than ${TRACE_FULL_HISTORY_TX_CAP.toLocaleString()} transactions`,
+        {
+          txCount,
+          txCap: TRACE_FULL_HISTORY_TX_CAP,
+        },
+      );
+    }
+  }
+
   const cached = getCachedValue(cacheKey);
   if (cached) {
     if (cached.metadataPending) {

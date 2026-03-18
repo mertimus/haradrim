@@ -100,6 +100,24 @@ function describeTracePanelError(error: unknown, fallbackMessage: string): Trace
   const code = backendError?.code;
   const retryAfterRaw = backendError?.details?.retryAfterSec;
   const retryAfterSec = Number(retryAfterRaw);
+  const txCount = Number(backendError?.details?.txCount);
+  const txCap = Number(backendError?.details?.txCap);
+
+  if (code === "trace_wallet_only") {
+    return {
+      title: "User Wallets Only",
+      message: "Only user-owned wallet addresses can be traced. Programs, PDAs, token accounts, and protocol-owned addresses are not supported.",
+    };
+  }
+
+  if (code === "trace_too_large") {
+    return {
+      title: "Full History Too Large",
+      message: Number.isFinite(txCount) && Number.isFinite(txCap) && txCount > 0 && txCap > 0
+        ? `This wallet has about ${txCount.toLocaleString()} transactions. Interactive full-history trace is capped at ${txCap.toLocaleString()}. Stay on quick scan or narrow the time range.`
+        : "This wallet is too large for an interactive full-history trace. Stay on quick scan or narrow the time range.",
+    };
+  }
 
   if (code === "route_busy") {
     return {
@@ -214,6 +232,10 @@ function filterCounterpartiesBySearch(
 
 function dedupeCounterpartyAddresses(counterparties: TraceCounterparty[]): string[] {
   return [...new Set(counterparties.map((cp) => cp.address).filter(Boolean))];
+}
+
+function canExpandTraceCounterparty(cp: TraceCounterparty): boolean {
+  return cp.accountType == null || cp.accountType === "wallet" || cp.accountType === "unknown";
 }
 
 function mergeTraceEventMetadata(
@@ -512,9 +534,8 @@ export function TraceExplorer({
     pollTimersRef.current.set(address, timer);
   }, [commitFlowData]);
 
-  const fetchFlows = useCallback(async (address: string, isSeed = false): Promise<TraceNodeFlows> => {
-    // Non-seed nodes use a tx limit to avoid timeouts on large program accounts
-    const opts = isSeed ? undefined : { limit: 2000 };
+  const fetchFlows = useCallback(async (address: string, fullHistory = false): Promise<TraceNodeFlows> => {
+    const opts = fullHistory ? undefined : { limit: 2000 };
     const cached = fetchedFlowsRef.current.get(address);
     if (cached) {
       if (cached.metadataPending) {
@@ -526,7 +547,7 @@ export function TraceExplorer({
     const inflight = inflightFlowsRef.current.get(address);
     if (inflight) return inflight;
 
-    if (!isSeed) quickScannedRef.current.add(address);
+    if (!fullHistory) quickScannedRef.current.add(address);
     const requestVersion = (flowRequestVersionRef.current.get(address) ?? 0) + 1;
     flowRequestVersionRef.current.set(address, requestVersion);
     const request = getTraceAnalysis(address, undefined, opts)
@@ -690,8 +711,7 @@ export function TraceExplorer({
     setCpSearch("");
 
     try {
-      const isSeed = address === seedAddress;
-      const data = await fetchFlows(address, isSeed);
+      const data = await fetchFlows(address, false);
       if (rid !== panelRequestIdRef.current) return;
       setPanelData(data);
     } catch (err) {
@@ -702,7 +722,7 @@ export function TraceExplorer({
     } finally {
       if (rid === panelRequestIdRef.current) setPanelLoading(false);
     }
-  }, [clearPanelSubscription, fetchFlows, subscribeFlowUpdates, seedAddress]);
+  }, [clearPanelSubscription, fetchFlows, subscribeFlowUpdates]);
 
   const handleEdgeClick = useCallback((source: string, target: string) => {
     clearPanelSubscription();
@@ -736,11 +756,11 @@ export function TraceExplorer({
     }
     fetchedFlowsRef.current.delete(address);
     inflightFlowsRef.current.delete(address);
-    quickScannedRef.current.delete(address);
 
     try {
       const data = await fetchFlows(address, true);
       if (rid !== panelRequestIdRef.current) return;
+      quickScannedRef.current.delete(address);
       setPanelData(data);
     } catch (err) {
       if (rid === panelRequestIdRef.current) {
@@ -772,7 +792,7 @@ export function TraceExplorer({
     cp: TraceCounterparty,
     direction: TraceDirection,
   ) => {
-    if (!traceState) return;
+    if (!traceState || !canExpandTraceCounterparty(cp)) return;
     const newState = addCounterpartiesToGraph(traceState, sourceAddr, [applyDomainLabel(cp)], direction);
     setTraceGraphState(newState);
     // Defer inspection to next tick so state updates flush first
@@ -785,7 +805,9 @@ export function TraceExplorer({
     direction: TraceDirection,
   ) => {
     if (!traceState || cps.length === 0) return;
-    const newState = addCounterpartiesToGraph(traceState, sourceAddr, cps.map(applyDomainLabel), direction);
+    const expandable = cps.filter(canExpandTraceCounterparty);
+    if (expandable.length === 0) return;
+    const newState = addCounterpartiesToGraph(traceState, sourceAddr, expandable.map(applyDomainLabel), direction);
     setTraceGraphState(newState);
   }, [traceState, applyDomainLabel, setTraceGraphState]);
 
@@ -1101,8 +1123,12 @@ export function TraceExplorer({
   const graphAddresses = traceState ? new Set(traceState.nodeMap.keys()) : new Set<string>();
   const graphEdges = traceState ? new Set(traceState.edgeMap.keys()) : new Set<string>();
   const selectedAddress = selectedNodeAddr ?? "";
-  const outflowNotAdded = outflow.filter((cp) => !graphEdges.has(`${selectedAddress}:${cp.address}`));
-  const inflowNotAdded = inflow.filter((cp) => !graphEdges.has(`${cp.address}:${selectedAddress}`));
+  const outflowNotAdded = outflow.filter((cp) => (
+    canExpandTraceCounterparty(cp) && !graphEdges.has(`${selectedAddress}:${cp.address}`)
+  ));
+  const inflowNotAdded = inflow.filter((cp) => (
+    canExpandTraceCounterparty(cp) && !graphEdges.has(`${cp.address}:${selectedAddress}`)
+  ));
   const nodeCount = nodes.length;
   const edgeCount = edges.length;
   const selectedNodeLabel = selectedNodeAddr
@@ -1137,7 +1163,7 @@ export function TraceExplorer({
           <span className="font-mono text-[9px] text-muted-foreground">{edgeCount} Edges</span>
           {loading && (
             <span className="scanning-text font-mono text-[9px] text-primary/85">
-              Scanning all history. This might take a few seconds...
+              Scanning recent history...
             </span>
           )}
         </div>
@@ -1667,12 +1693,14 @@ function FlowGroup({
                 const isAdded = direction === "outflow"
                   ? graphEdges.has(`${selectedAddress}:${cp.address}`)
                   : graphEdges.has(`${cp.address}:${selectedAddress}`);
+                const canAdd = canExpandTraceCounterparty(cp);
                 return (
                   <CpTableRow
                     key={cp.address}
                     cp={cp}
                     direction={direction}
                     color={color}
+                    canAdd={canAdd}
                     isAdded={isAdded}
                     onAdd={() => onAddOne(cp)}
                     domainMap={domainMap}
@@ -1691,6 +1719,7 @@ function CpTableRow({
   cp,
   direction,
   color,
+  canAdd,
   isAdded,
   onAdd,
   domainMap,
@@ -1698,6 +1727,7 @@ function CpTableRow({
   cp: TraceCounterparty;
   direction: TraceDirection;
   color: string;
+  canAdd: boolean;
   isAdded: boolean;
   onAdd: () => void;
   domainMap: Map<string, string>;
@@ -1766,7 +1796,9 @@ function CpTableRow({
           <span className="font-mono text-[9px] text-muted-foreground">{formatCompactDate(cp.lastSeen)}</span>
         </TableCell>
         <TableCell className="w-20 py-1.5 text-center">
-          {!isAdded ? (
+          {isAdded ? (
+            <span className="font-mono text-[7px] text-muted-foreground/40">added</span>
+          ) : canAdd ? (
             <button
               onClick={(e) => { e.stopPropagation(); onAdd(); }}
               className="font-mono text-[11px] leading-none text-primary hover:text-primary-foreground hover:bg-primary/80 cursor-pointer px-2 py-1 rounded border border-primary/30 hover:border-primary transition-colors"
@@ -1774,7 +1806,7 @@ function CpTableRow({
               +
             </button>
           ) : (
-            <span className="font-mono text-[7px] text-muted-foreground/40">added</span>
+            <span className="font-mono text-[7px] text-muted-foreground/40">wallet only</span>
           )}
         </TableCell>
       </TableRow>
