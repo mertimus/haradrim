@@ -26,3 +26,8 @@ dist-ssr
 # Environment
 .env
 .env.local
+
+# Local artifacts
+.vite/
+reports/
+public/data/
