@@ -1,5 +1,7 @@
 import {
   getDirectionalAssets,
+  getDirectionalFirstSeen,
+  getDirectionalLastSeen,
   getDirectionalTransferCount,
   getDirectionalTxCount,
   type TraceAssetFlow,
@@ -86,8 +88,8 @@ export function addCounterpartiesToGraph(
       txCount: getDirectionalTxCount(cp, direction),
       transferCount: getDirectionalTransferCount(cp, direction),
       assetCount: edgeAssets.length,
-      firstSeen: cp.firstSeen,
-      lastSeen: cp.lastSeen,
+      firstSeen: getDirectionalFirstSeen(cp, direction),
+      lastSeen: getDirectionalLastSeen(cp, direction),
     };
     const edgeKey = `${edgeData.from}:${edgeData.to}`;
     if (!newEdgeMap.has(edgeKey)) {
@@ -173,21 +175,20 @@ export function buildTraceGraph(state: TraceState): { nodes: Node[]; edges: Edge
     });
   }
 
-  // Compute per-edge total uiAmount and find max for weight normalization
-  const edgeTotals = new Map<string, number>();
-  let maxEdgeTotal = 0;
-  for (const [key, edge] of edgeMap) {
+  // Weight edges by activity count, not mixed token/SOL amounts.
+  let maxTransferCount = 0;
+  for (const [, edge] of edgeMap) {
     if (!nodeMap.has(edge.from) || !nodeMap.has(edge.to)) continue;
-    const total = edge.assets.reduce((sum, a) => sum + a.uiAmount, 0);
-    edgeTotals.set(key, total);
-    if (total > maxEdgeTotal) maxEdgeTotal = total;
+    if (edge.transferCount > maxTransferCount) {
+      maxTransferCount = edge.transferCount;
+    }
   }
 
   // Build ReactFlow edges
   const edges: Edge[] = [];
   for (const [key, edge] of edgeMap) {
     if (!nodeMap.has(edge.from) || !nodeMap.has(edge.to)) continue;
-    const weight = maxEdgeTotal > 0 ? (edgeTotals.get(key) ?? 0) / maxEdgeTotal : 0;
+    const weight = maxTransferCount > 0 ? edge.transferCount / maxTransferCount : 0;
     edges.push({
       id: key,
       source: edge.from,

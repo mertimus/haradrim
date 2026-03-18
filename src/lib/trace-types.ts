@@ -59,6 +59,10 @@ export interface TraceCounterparty {
   outflowTxCount: number;
   inflowTransferCount: number;
   outflowTransferCount: number;
+  inflowFirstSeen: number;
+  inflowLastSeen: number;
+  outflowFirstSeen: number;
+  outflowLastSeen: number;
   firstSeen: number;
   lastSeen: number;
   inflowAssets: TraceAssetFlow[];
@@ -116,6 +120,10 @@ interface MutableTraceCounterparty {
   outflowTxCount: number;
   inflowTransferCount: number;
   outflowTransferCount: number;
+  inflowFirstSeen: number;
+  inflowLastSeen: number;
+  outflowFirstSeen: number;
+  outflowLastSeen: number;
   firstSeen: number;
   lastSeen: number;
   inflowAssets: Map<string, MutableTraceAssetFlow>;
@@ -147,6 +155,10 @@ function initTraceCounterpartyEntry(timestamp: number): MutableTraceCounterparty
     outflowTxCount: 0,
     inflowTransferCount: 0,
     outflowTransferCount: 0,
+    inflowFirstSeen: 0,
+    inflowLastSeen: 0,
+    outflowFirstSeen: 0,
+    outflowLastSeen: 0,
     firstSeen: ts,
     lastSeen: ts,
     inflowAssets: new Map(),
@@ -256,6 +268,20 @@ export function getDirectionalTransferCount(
   return direction === "outflow" ? cp.outflowTransferCount : cp.inflowTransferCount;
 }
 
+export function getDirectionalFirstSeen(
+  cp: TraceCounterparty,
+  direction: TraceDirection,
+): number {
+  return direction === "outflow" ? cp.outflowFirstSeen : cp.inflowFirstSeen;
+}
+
+export function getDirectionalLastSeen(
+  cp: TraceCounterparty,
+  direction: TraceDirection,
+): number {
+  return direction === "outflow" ? cp.outflowLastSeen : cp.inflowLastSeen;
+}
+
 export function getPrimaryDirectionalAsset(
   cp: TraceCounterparty,
   direction: TraceDirection,
@@ -339,6 +365,29 @@ export function filterTraceEvents(
   });
 }
 
+export function selectEdgeTransactions(
+  source: string,
+  target: string,
+  sourceFlows?: TraceNodeFlows | null,
+  targetFlows?: TraceNodeFlows | null,
+): TraceTransferEvent[] | null {
+  const sourceEvents = sourceFlows?.events.filter(
+    (event) => event.counterparty === target && event.direction === "outflow",
+  );
+  if (sourceEvents && sourceEvents.length > 0) {
+    return sourceEvents.sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  const targetEvents = targetFlows?.events.filter(
+    (event) => event.counterparty === source && event.direction === "inflow",
+  );
+  if (targetEvents && targetEvents.length > 0) {
+    return targetEvents.sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  return null;
+}
+
 export function aggregateTraceCounterparties(events: TraceTransferEvent[]): TraceCounterparty[] {
   const counterpartyMap = new Map<string, MutableTraceCounterparty>();
   const seenCounterpartyTx = new Set<string>();
@@ -364,6 +413,20 @@ export function aggregateTraceCounterparties(events: TraceTransferEvent[]): Trac
 
     if (event.direction === "outflow") entry.outflowTransferCount += 1;
     else entry.inflowTransferCount += 1;
+
+    if (event.timestamp > 0) {
+      if (event.direction === "outflow") {
+        entry.outflowFirstSeen = entry.outflowFirstSeen > 0
+          ? Math.min(entry.outflowFirstSeen, event.timestamp)
+          : event.timestamp;
+        entry.outflowLastSeen = Math.max(entry.outflowLastSeen, event.timestamp);
+      } else {
+        entry.inflowFirstSeen = entry.inflowFirstSeen > 0
+          ? Math.min(entry.inflowFirstSeen, event.timestamp)
+          : event.timestamp;
+        entry.inflowLastSeen = Math.max(entry.inflowLastSeen, event.timestamp);
+      }
+    }
 
     const txKey = `${event.counterparty}:${event.signature}`;
     if (!seenCounterpartyTx.has(txKey)) {
@@ -398,6 +461,10 @@ export function aggregateTraceCounterparties(events: TraceTransferEvent[]): Trac
       outflowTxCount: data.outflowTxCount,
       inflowTransferCount: data.inflowTransferCount,
       outflowTransferCount: data.outflowTransferCount,
+      inflowFirstSeen: data.inflowFirstSeen,
+      inflowLastSeen: data.inflowLastSeen,
+      outflowFirstSeen: data.outflowFirstSeen,
+      outflowLastSeen: data.outflowLastSeen,
       firstSeen: data.firstSeen,
       lastSeen: data.lastSeen,
       inflowAssets: finalizeTraceAssets(data.inflowAssets),

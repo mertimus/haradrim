@@ -18,6 +18,7 @@ import {
   filterTraceEvents,
   getDirectionalAssets,
   getDirectionalTxCount,
+  selectEdgeTransactions,
   type TraceAssetFlow,
   type TraceAssetOption,
   type TraceCounterparty,
@@ -70,6 +71,33 @@ function formatDateSpan(firstSeen: number, lastSeen: number): string {
   if (!firstSeen && !lastSeen) return "";
   if (firstSeen === lastSeen) return formatShortDate(firstSeen);
   return `${formatShortDate(firstSeen)} - ${formatShortDate(lastSeen)}`;
+}
+
+function createFreshTraceFlowFilters(): TraceFlowFilters {
+  return { ...DEFAULT_TRACE_FLOW_FILTERS };
+}
+
+function summarizeFilteredEvents(events: TraceTransferEvent[]): {
+  firstSeen: number;
+  lastSeen: number;
+  inflowTransfers: number;
+  outflowTransfers: number;
+} {
+  let firstSeen = 0;
+  let lastSeen = 0;
+  let inflowTransfers = 0;
+  let outflowTransfers = 0;
+
+  for (const event of events) {
+    if (event.direction === "outflow") outflowTransfers += 1;
+    else inflowTransfers += 1;
+
+    if (event.timestamp <= 0) continue;
+    firstSeen = firstSeen > 0 ? Math.min(firstSeen, event.timestamp) : event.timestamp;
+    lastSeen = Math.max(lastSeen, event.timestamp);
+  }
+
+  return { firstSeen, lastSeen, inflowTransfers, outflowTransfers };
 }
 
 /* ── Sortable table helpers ───────────────────────────────────────── */
@@ -243,7 +271,7 @@ export function TraceExplorer({
   const [panelLoading, setPanelLoading] = useState(false);
   const [panelData, setPanelData] = useState<TraceNodeFlows | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
-  const [flowFilters, setFlowFilters] = useState<TraceFlowFilters>(DEFAULT_TRACE_FLOW_FILTERS);
+  const [flowFilters, setFlowFilters] = useState<TraceFlowFilters>(createFreshTraceFlowFilters);
   const [collapsed, setCollapsed] = useState({ outflow: false, inflow: true });
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [cpSearch, setCpSearch] = useState("");
@@ -254,16 +282,32 @@ export function TraceExplorer({
   const [enhancedLoading, setEnhancedLoading] = useState(false);
   const [flowsVersion, setFlowsVersion] = useState(0);
 
+  const traceStateRef = useRef<TraceState | null>(null);
   const fetchedFlowsRef = useRef<Map<string, TraceNodeFlows>>(new Map());
+  const flowRequestVersionRef = useRef<Map<string, number>>(new Map());
   const quickScannedRef = useRef<Set<string>>(new Set());
   const inflightFlowsRef = useRef<Map<string, Promise<TraceNodeFlows>>>(new Map());
   const flowListenersRef = useRef<Map<string, Set<(data: TraceNodeFlows) => void>>>(new Map());
   const panelSubscriptionCleanupRef = useRef<(() => void) | null>(null);
-  const domainQueriedRef = useRef<Set<string>>(new Set());
-  const pollTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const domainSettledRef = useRef<Set<string>>(new Set());
+  const domainInflightRef = useRef<Set<string>>(new Set());
+  const pollTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const requestIdRef = useRef(0);
   const panelRequestIdRef = useRef(0);
   const autoSelectRef = useRef<string | null>(null);
+
+  const setTraceGraphState = useCallback((nextState: TraceState | null) => {
+    traceStateRef.current = nextState;
+    setTraceState(nextState);
+    if (!nextState) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+    const graph = buildTraceGraph(nextState);
+    setNodes(graph.nodes);
+    setEdges(graph.edges);
+  }, []);
 
   const publishFlowUpdate = useCallback((address: string, data: TraceNodeFlows) => {
     const listeners = flowListenersRef.current.get(address);
@@ -294,43 +338,65 @@ export function TraceExplorer({
     panelSubscriptionCleanupRef.current = null;
   }, []);
 
+  const commitFlowData = useCallback((address: string, version: number, data: TraceNodeFlows): boolean => {
+    if ((flowRequestVersionRef.current.get(address) ?? 0) !== version) {
+      return false;
+    }
+    fetchedFlowsRef.current.set(address, data);
+    setFlowsVersion((v) => v + 1);
+    publishFlowUpdate(address, data);
+    return true;
+  }, [publishFlowUpdate]);
+
+  const scheduleFlowPoll = useCallback((
+    address: string,
+    options: { limit?: number } | undefined,
+    attempt = 1,
+    version = flowRequestVersionRef.current.get(address) ?? 0,
+  ) => {
+    if (attempt > 6 || pollTimersRef.current.has(address)) return;
+
+    const delay = Math.min(3000 * attempt, 15000);
+    const timer = setTimeout(async () => {
+      pollTimersRef.current.delete(address);
+      try {
+        const enriched = await getTraceAnalysis(address, undefined, options);
+        if (!commitFlowData(address, version, enriched)) return;
+        if (enriched.metadataPending) scheduleFlowPoll(address, options, attempt + 1, version);
+      } catch (err) {
+        const is429 = err instanceof Error && err.message.includes("429");
+        if (!is429) scheduleFlowPoll(address, options, attempt + 1, version);
+      }
+    }, delay);
+
+    pollTimersRef.current.set(address, timer);
+  }, [commitFlowData]);
+
   const fetchFlows = useCallback(async (address: string, isSeed = false): Promise<TraceNodeFlows> => {
+    // Non-seed nodes use a tx limit to avoid timeouts on large program accounts
+    const opts = isSeed ? undefined : { limit: 2000 };
     const cached = fetchedFlowsRef.current.get(address);
-    if (cached && !cached.metadataPending) return cached;
+    if (cached) {
+      if (cached.metadataPending) {
+        scheduleFlowPoll(address, opts, 1, flowRequestVersionRef.current.get(address) ?? 0);
+      }
+      return cached;
+    }
 
     const inflight = inflightFlowsRef.current.get(address);
     if (inflight) return inflight;
 
-    // Non-seed nodes use a tx limit to avoid timeouts on large program accounts
-    const opts = isSeed ? undefined : { limit: 2000 };
     if (!isSeed) quickScannedRef.current.add(address);
+    const requestVersion = (flowRequestVersionRef.current.get(address) ?? 0) + 1;
+    flowRequestVersionRef.current.set(address, requestVersion);
     const request = getTraceAnalysis(address, undefined, opts)
       .then((data) => {
-        fetchedFlowsRef.current.set(address, data);
-        setFlowsVersion((v) => v + 1);
-        publishFlowUpdate(address, data);
+        if (!commitFlowData(address, requestVersion, data)) {
+          return fetchedFlowsRef.current.get(address) ?? data;
+        }
 
-        // If metadata is still pending, poll until enriched
         if (data.metadataPending) {
-          const poll = (attempt: number) => {
-            const delay = Math.min(3000 * attempt, 15000);
-            const timer = setTimeout(async () => {
-              pollTimersRef.current.delete(timer);
-              try {
-                const enriched = await getTraceAnalysis(address, undefined, opts);
-                fetchedFlowsRef.current.set(address, enriched);
-                setFlowsVersion((v) => v + 1);
-                publishFlowUpdate(address, enriched);
-                if (enriched.metadataPending && attempt < 6) poll(attempt + 1);
-              } catch (err) {
-                // Stop polling on rate limit (429) — retrying will just burn more budget
-                const is429 = err instanceof Error && err.message.includes("429");
-                if (!is429 && attempt < 6) poll(attempt + 1);
-              }
-            }, delay);
-            pollTimersRef.current.add(timer);
-          };
-          poll(1);
+          scheduleFlowPoll(address, opts, 1, requestVersion);
         }
 
         return data;
@@ -341,32 +407,39 @@ export function TraceExplorer({
 
     inflightFlowsRef.current.set(address, request);
     return request;
-  }, [publishFlowUpdate]);
+  }, [commitFlowData, scheduleFlowPoll]);
 
   const resetTrace = useCallback(() => {
     requestIdRef.current += 1;
     panelRequestIdRef.current += 1;
     autoSelectRef.current = null;
     clearPanelSubscription();
-    for (const t of pollTimersRef.current) clearTimeout(t);
+    for (const timer of pollTimersRef.current.values()) clearTimeout(timer);
     pollTimersRef.current.clear();
     setSeedAddress("");
     setSeedIdentity(null);
-    setTraceState(null);
-    setNodes([]);
-    setEdges([]);
+    setTraceGraphState(null);
     setLoading(false);
     setTraceError(null);
     setSelectedNodeAddr(null);
     setPanelLoading(false);
     setPanelData(null);
     setPanelError(null);
+    setFlowFilters(createFreshTraceFlowFilters());
     setCollapsed({ outflow: false, inflow: true });
+    setFiltersExpanded(false);
+    setCpSearch("");
     setPanelMode("node");
     setSelectedEdge(null);
+    setEnhancedTxns(new Map());
+    setEnhancedLoading(false);
+    setFlowsVersion(0);
     fetchedFlowsRef.current = new Map();
+    flowRequestVersionRef.current = new Map();
     inflightFlowsRef.current = new Map();
-  }, [clearPanelSubscription]);
+    flowListenersRef.current = new Map();
+    quickScannedRef.current = new Set();
+  }, [clearPanelSubscription, setTraceGraphState]);
 
   const startTrace = useCallback(async (
     address: string,
@@ -378,22 +451,29 @@ export function TraceExplorer({
     const rid = ++requestIdRef.current;
     setSeedAddress(address);
     setSeedIdentity(null);
-    setTraceState(null);
-    setNodes([]);
-    setEdges([]);
+    setTraceGraphState(null);
     setLoading(true);
     setTraceError(null);
     clearPanelSubscription();
-    for (const t of pollTimersRef.current) clearTimeout(t);
+    for (const timer of pollTimersRef.current.values()) clearTimeout(timer);
     pollTimersRef.current.clear();
     setSelectedNodeAddr(null);
     setPanelData(null);
     setPanelError(null);
+    setFlowFilters(createFreshTraceFlowFilters());
     setCollapsed({ outflow: false, inflow: true });
+    setFiltersExpanded(false);
+    setCpSearch("");
     setPanelMode("node");
     setSelectedEdge(null);
+    setEnhancedTxns(new Map());
+    setEnhancedLoading(false);
+    setFlowsVersion(0);
     fetchedFlowsRef.current = new Map();
+    flowRequestVersionRef.current = new Map();
     inflightFlowsRef.current = new Map();
+    flowListenersRef.current = new Map();
+    quickScannedRef.current = new Set();
     panelRequestIdRef.current += 1;
 
     if (updateHistory) {
@@ -401,30 +481,39 @@ export function TraceExplorer({
       onRouteAddressChange?.(address);
     }
 
-    try {
-      const identResult = await getIdentity(address);
-      if (rid !== requestIdRef.current) return;
-      setSeedIdentity(identResult);
+    const state = createTraceState(address);
+    setTraceGraphState(state);
+    autoSelectRef.current = address;
+    if (rid === requestIdRef.current) setLoading(false);
 
-      const state = createTraceState(
-        address,
-        identResult?.label ?? identResult?.name,
-        identResult?.category,
-      );
-      const graph = buildTraceGraph(state);
-      setTraceState(state);
-      setNodes(graph.nodes);
-      setEdges(graph.edges);
-      // Auto-open the inspection panel for the seed node
-      autoSelectRef.current = address;
-    } catch (err) {
-      if (rid === requestIdRef.current) {
-        setTraceError(err instanceof Error ? err.message : "Trace failed");
-      }
-    } finally {
-      if (rid === requestIdRef.current) setLoading(false);
-    }
-  }, [clearPanelSubscription, onRouteAddressChange]);
+    void getIdentity(address)
+      .then((identResult) => {
+        if (rid !== requestIdRef.current) return;
+        setSeedIdentity(identResult);
+        if (!identResult) return;
+
+        const current = traceStateRef.current;
+        if (!current || current.seedAddress !== address) return;
+        const existingSeed = current.nodeMap.get(address);
+        if (!existingSeed) return;
+
+        const nextNodeMap = new Map(current.nodeMap);
+        nextNodeMap.set(address, {
+          ...existingSeed,
+          label: identResult.label ?? identResult.name ?? existingSeed.label,
+          category: identResult.category ?? existingSeed.category,
+        });
+        setTraceGraphState({
+          seedAddress: current.seedAddress,
+          nodeMap: nextNodeMap,
+          edgeMap: new Map(current.edgeMap),
+        });
+      })
+      .catch((err) => {
+        if (rid !== requestIdRef.current) return;
+        console.warn("Failed to fetch trace seed identity:", err);
+      });
+  }, [clearPanelSubscription, onRouteAddressChange, setTraceGraphState]);
 
   const handleNodeClick = useCallback(async (address: string) => {
     const rid = ++panelRequestIdRef.current;
@@ -483,7 +572,13 @@ export function TraceExplorer({
     setPanelError(null);
 
     // Clear cached quick-scan result so fetchFlows doesn't return it
+    const existingTimer = pollTimersRef.current.get(address);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      pollTimersRef.current.delete(address);
+    }
     fetchedFlowsRef.current.delete(address);
+    inflightFlowsRef.current.delete(address);
     quickScannedRef.current.delete(address);
 
     try {
@@ -521,13 +616,10 @@ export function TraceExplorer({
   ) => {
     if (!traceState) return;
     const newState = addCounterpartiesToGraph(traceState, sourceAddr, [applyDomainLabel(cp)], direction);
-    const graph = buildTraceGraph(newState);
-    setTraceState(newState);
-    setNodes(graph.nodes);
-    setEdges(graph.edges);
+    setTraceGraphState(newState);
     // Defer inspection to next tick so state updates flush first
     queueMicrotask(() => void handleNodeClick(cp.address));
-  }, [traceState, applyDomainLabel, handleNodeClick]);
+  }, [traceState, applyDomainLabel, handleNodeClick, setTraceGraphState]);
 
   const handleAddAll = useCallback((
     sourceAddr: string,
@@ -536,19 +628,13 @@ export function TraceExplorer({
   ) => {
     if (!traceState || cps.length === 0) return;
     const newState = addCounterpartiesToGraph(traceState, sourceAddr, cps.map(applyDomainLabel), direction);
-    const graph = buildTraceGraph(newState);
-    setTraceState(newState);
-    setNodes(graph.nodes);
-    setEdges(graph.edges);
-  }, [traceState, applyDomainLabel]);
+    setTraceGraphState(newState);
+  }, [traceState, applyDomainLabel, setTraceGraphState]);
 
   const handleRemoveNode = useCallback((address: string) => {
     if (!traceState) return;
     const newState = removeNodeFromGraph(traceState, address);
-    const graph = buildTraceGraph(newState);
-    setTraceState(newState);
-    setNodes(graph.nodes);
-    setEdges(graph.edges);
+    setTraceGraphState(newState);
     if (selectedNodeAddr === address) {
       clearPanelSubscription();
       panelRequestIdRef.current += 1;
@@ -557,7 +643,7 @@ export function TraceExplorer({
       setPanelData(null);
       setPanelError(null);
     }
-  }, [clearPanelSubscription, traceState, selectedNodeAddr]);
+  }, [clearPanelSubscription, traceState, selectedNodeAddr, setTraceGraphState]);
 
   const handleBack = useCallback(() => {
     resetTrace();
@@ -567,7 +653,7 @@ export function TraceExplorer({
 
   useEffect(() => () => {
     clearPanelSubscription();
-    for (const t of pollTimersRef.current) clearTimeout(t);
+    for (const timer of pollTimersRef.current.values()) clearTimeout(timer);
     pollTimersRef.current.clear();
   }, [clearPanelSubscription]);
 
@@ -616,20 +702,36 @@ export function TraceExplorer({
   // Resolve SNS .sol domains for unlabeled counterparties
   useEffect(() => {
     const unlabeled = panelCps
-      .filter((cp) => !cp.label && !domainQueriedRef.current.has(cp.address))
+      .filter((cp) => !cp.label && !domainSettledRef.current.has(cp.address) && !domainInflightRef.current.has(cp.address))
       .map((cp) => cp.address);
     if (unlabeled.length === 0) return;
-    for (const addr of unlabeled) domainQueriedRef.current.add(addr);
+    for (const addr of unlabeled) domainInflightRef.current.add(addr);
     let cancelled = false;
     getBatchSolDomains(unlabeled).then((resolved) => {
-      if (cancelled || resolved.size === 0) return;
-      setDomainMap((prev) => {
-        const next = new Map(prev);
-        for (const [addr, domain] of resolved) next.set(addr, domain);
-        return next;
-      });
-    }).catch(() => {});
-    return () => { cancelled = true; };
+      if (cancelled) return;
+      if (resolved.size > 0) {
+        setDomainMap((prev) => {
+          const next = new Map(prev);
+          for (const [addr, domain] of resolved) next.set(addr, domain);
+          return next;
+        });
+      }
+      for (const addr of unlabeled) {
+        domainInflightRef.current.delete(addr);
+        domainSettledRef.current.add(addr);
+      }
+    }).catch(() => {
+      if (cancelled) return;
+      for (const addr of unlabeled) {
+        domainInflightRef.current.delete(addr);
+      }
+    });
+    return () => {
+      cancelled = true;
+      for (const addr of unlabeled) {
+        domainInflightRef.current.delete(addr);
+      }
+    };
   }, [panelCps]);
 
   const outflow = useMemo(
@@ -645,14 +747,11 @@ export function TraceExplorer({
     [panelCps],
   );
 
-  const filteredFirstSeen = filteredEvents.length > 0
-    ? Math.min(...filteredEvents.map((event) => event.timestamp))
-    : 0;
-  const filteredLastSeen = filteredEvents.length > 0
-    ? Math.max(...filteredEvents.map((event) => event.timestamp))
-    : 0;
-  const outflowTransfers = filteredEvents.filter((event) => event.direction === "outflow").length;
-  const inflowTransfers = filteredEvents.filter((event) => event.direction === "inflow").length;
+  const filteredSummary = useMemo(() => summarizeFilteredEvents(filteredEvents), [filteredEvents]);
+  const filteredFirstSeen = filteredSummary.firstSeen;
+  const filteredLastSeen = filteredSummary.lastSeen;
+  const outflowTransfers = filteredSummary.outflowTransfers;
+  const inflowTransfers = filteredSummary.inflowTransfers;
   const hasActiveFilters = flowFilters.minAmount !== ""
     || flowFilters.maxAmount !== ""
     || flowFilters.dateFrom !== ""
@@ -670,17 +769,12 @@ export function TraceExplorer({
   const edgeTransactions = useMemo((): TraceTransferEvent[] | null => {
     if (!selectedEdge) return null;
     const { source, target } = selectedEdge;
-    const sourceFlows = fetchedFlowsRef.current.get(source);
-    if (sourceFlows) {
-      const events = sourceFlows.events.filter((e) => e.counterparty === target);
-      if (events.length > 0) return events.sort((a, b) => b.timestamp - a.timestamp);
-    }
-    const targetFlows = fetchedFlowsRef.current.get(target);
-    if (targetFlows) {
-      const events = targetFlows.events.filter((e) => e.counterparty === source);
-      if (events.length > 0) return events.sort((a, b) => b.timestamp - a.timestamp);
-    }
-    return null;
+    return selectEdgeTransactions(
+      source,
+      target,
+      fetchedFlowsRef.current.get(source),
+      fetchedFlowsRef.current.get(target),
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedEdge, flowsVersion]);
 
@@ -1006,7 +1100,7 @@ export function TraceExplorer({
                     <div className="flex items-center gap-1.5 shrink-0">
                       {hasActiveFilters && (
                         <button
-                          onClick={() => setFlowFilters(DEFAULT_TRACE_FLOW_FILTERS)}
+                          onClick={() => setFlowFilters(createFreshTraceFlowFilters())}
                           className="inline-flex items-center gap-1 rounded border border-border/60 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-widest text-muted-foreground cursor-pointer hover:text-primary"
                         >
                           <RotateCcw className="h-2.5 w-2.5" />

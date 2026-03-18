@@ -706,17 +706,25 @@ async function _getBatchSolDomains(
     }
   }
 
-  const domainResults = await Promise.allSettled(
-    validAddrs.map(({ pk }) => getAllDomains(connection, pk)),
+  const domainResults = await mapWithConcurrency(
+    validAddrs,
+    MAX_METADATA_FETCH_CONCURRENCY,
+    async ({ pk }) => {
+      try {
+        return await getAllDomains(connection, pk);
+      } catch {
+        return [];
+      }
+    },
   );
 
   // Collect all domain pubkeys with their owner
   const allDomainKeys: PublicKey[] = [];
   const ownerForDomainIndex: string[] = [];
   for (let i = 0; i < domainResults.length; i++) {
-    const r = domainResults[i];
-    if (r.status === "fulfilled" && r.value.length > 0) {
-      for (const dk of r.value) {
+    const domains = domainResults[i];
+    if (domains.length > 0) {
+      for (const dk of domains) {
         allDomainKeys.push(dk);
         ownerForDomainIndex.push(validAddrs[i].addr);
       }

@@ -64,3 +64,17 @@ export async function cachedValue(key, ttlMs, loader) {
   inflight.set(key, request);
   return request;
 }
+
+export async function withInflightValue(key, loader) {
+  const pending = inflight.get(key);
+  if (pending) return pending;
+
+  const request = Promise.resolve()
+    .then(loader)
+    .finally(() => {
+      inflight.delete(key);
+    });
+
+  inflight.set(key, request);
+  return request;
+}

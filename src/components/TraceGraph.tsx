@@ -195,7 +195,7 @@ const TraceEdge = memo(function TraceEdge({
       >
         {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
         <div style={{ ...EDGE_LABEL_STYLE, cursor: "pointer" }} onClick={handleLabelClick}>
-          <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>Total (SOL): </span><span style={{ color: "#ffb800" }}>{solLine}</span></div>
+          <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>SOL: </span><span style={{ color: "#ffb800" }}>{solLine}</span></div>
           {tokens.length > 0 && <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>Tokens: </span><span style={{ color: "#c8d6e5" }}>{tokenLine}</span></div>}
           <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>Transactions: </span><span style={{ color: "#c8d6e5" }}>{d.txCount}</span></div>
           {dateLine && <div style={EDGE_ROW_STYLE}><span style={{ color: "#6b7b8d" }}>Last seen: </span><span style={{ color: "#c8d6e5" }}>{dateLine}</span></div>}

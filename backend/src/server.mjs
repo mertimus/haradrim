@@ -19,7 +19,14 @@ import {
   TOKEN_SNAPSHOT_TTL_MS,
   STABLECOIN_DASHBOARD_TTL_MS,
 } from "./config.mjs";
-import { cachedValue, getCacheSize, getCachedValue, getInflightValue, setCachedValue } from "./cache.mjs";
+import {
+  cachedValue,
+  getCacheSize,
+  getCachedValue,
+  getInflightValue,
+  setCachedValue,
+  withInflightValue,
+} from "./cache.mjs";
 import {
   createHttpError,
   enforceHeavyRouteBudget,
@@ -86,6 +93,23 @@ function sendJson(res, status, payload, extraHeaders = {}) {
     ...extraHeaders,
   });
   res.end(body);
+}
+
+function cacheJsonValueIfSmall(key, payload, ttlMs) {
+  if (ttlMs <= 0) return;
+
+  let bodyBytes;
+  try {
+    bodyBytes = Buffer.byteLength(JSON.stringify(payload));
+  } catch {
+    return;
+  }
+
+  if (!Number.isFinite(bodyBytes) || bodyBytes > CACHE_MAX_BODY_BYTES) {
+    return;
+  }
+
+  setCachedValue(key, payload, ttlMs);
 }
 
 async function readBody(req, limitBytes = REQUEST_BODY_LIMIT_BYTES) {
@@ -387,15 +411,18 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
   const result = await withConcurrencyLimit(
     HEAVY_ROUTE_POLICIES.traceAnalysis.concurrencyLabel,
     HEAVY_ROUTE_POLICIES.traceAnalysis.maxConcurrency,
-    () => cachedValue(cacheKey, TRACE_ANALYSIS_TTL_MS, () =>
-      analyzeTrace(address, range, (enriched) => {
+    () => withInflightValue(cacheKey, async () => {
+      const result = await analyzeTrace(address, range, (enriched) => {
         try {
-          setCachedValue(cacheKey, enriched, TRACE_ANALYSIS_TTL_MS);
+          cacheJsonValueIfSmall(cacheKey, enriched, TRACE_ANALYSIS_TTL_MS);
         } catch (err) {
           console.error("[trace-enrich] failed to cache enriched result:", err);
         }
-      }, { limit }),
-    ),
+      }, { limit });
+
+      cacheJsonValueIfSmall(cacheKey, result, TRACE_ANALYSIS_TTL_MS);
+      return result;
+    }),
   );
   sendJson(res, 200, result);
 }
