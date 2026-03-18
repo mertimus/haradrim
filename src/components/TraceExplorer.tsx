@@ -111,7 +111,17 @@ function describeTracePanelError(error: unknown, fallbackMessage: string): Trace
     };
   }
 
-  if (status === 429 || message.includes("429")) {
+  if (code === "upstream_rate_limited") {
+    return {
+      title: "Trace Provider Busy",
+      message: Number.isFinite(retryAfterSec) && retryAfterSec > 0
+        ? `The upstream Solana data provider is saturated right now. Try again in about ${formatRetryDelay(retryAfterSec)}.`
+        : "The upstream Solana data provider is saturated right now. Try again shortly.",
+      ...(Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? { retryAfterSec } : {}),
+    };
+  }
+
+  if (status === 429) {
     return {
       title: "Trace Server Busy",
       message: Number.isFinite(retryAfterSec) && retryAfterSec > 0

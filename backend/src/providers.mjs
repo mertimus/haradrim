@@ -11,9 +11,11 @@ import {
   MAX_METADATA_FETCH_CONCURRENCY,
   MAX_SLICE_CONCURRENCY,
   MAX_TRANSACTION_SLICES,
+  MAX_UPSTREAM_FETCH_CONCURRENCY,
   RATE_LIMIT_RETRIES,
   TARGET_GTFA_TXS_PER_SLICE,
 } from "./config.mjs";
+import { createHttpError } from "./guard.mjs";
 import {
   cachedValue,
   getCachedValue,
@@ -29,6 +31,8 @@ const IDENTITY_TTL_MS = 30 * 60 * 1000;
 const TOKEN_METADATA_TTL_MS = 60 * 60 * 1000;
 const ACCOUNT_TYPE_TTL_MS = 60 * 60 * 1000;
 const CACHE_MISS = Object.freeze({ __cacheMiss: true });
+let upstreamFetchInFlight = 0;
+const upstreamFetchWaiters = [];
 
 function getPerItemCacheKey(namespace, key) {
   return `${namespace}:${key}`;
@@ -67,7 +71,12 @@ export async function fetchWithTimeout(input, init = {}, timeoutMs = FETCH_TIMEO
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    await acquireUpstreamFetchSlot();
+    try {
+      return await fetch(input, { ...init, signal: controller.signal });
+    } finally {
+      releaseUpstreamFetchSlot();
+    }
   } finally {
     clearTimeout(timeoutId);
   }
@@ -81,6 +90,26 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function acquireUpstreamFetchSlot() {
+  if (upstreamFetchInFlight < MAX_UPSTREAM_FETCH_CONCURRENCY) {
+    upstreamFetchInFlight += 1;
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    upstreamFetchWaiters.push(resolve);
+  });
+}
+
+function releaseUpstreamFetchSlot() {
+  const next = upstreamFetchWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  upstreamFetchInFlight = Math.max(0, upstreamFetchInFlight - 1);
+}
+
 async function retryingJsonRequest(makeRequest) {
   let lastError = null;
   for (let attempt = 0; attempt <= RATE_LIMIT_RETRIES; attempt += 1) {
@@ -88,17 +117,30 @@ async function retryingJsonRequest(makeRequest) {
       const response = await makeRequest();
       if (!response.ok) {
         const body = await response.text().catch(() => "");
+        const retryAfterSec = Number(response.headers.get("retry-after"));
         if (isRetryableStatus(response.status) && attempt < RATE_LIMIT_RETRIES) {
           await sleep(400 * (attempt + 1));
           continue;
+        }
+        if (response.status === 429) {
+          throw createHttpError(503, "upstream_rate_limited", "Upstream Solana data provider is saturated right now", {
+            upstreamStatus: 429,
+            ...(Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? { retryAfterSec } : {}),
+          });
         }
         throw new Error(`upstream ${response.status}: ${body.slice(0, 200)}`);
       }
       const json = await response.json();
       if (json?.error) {
-        if ((json.error.code === -32429 || isRetryableStatus(Number(json.error.code))) && attempt < RATE_LIMIT_RETRIES) {
+        const upstreamCode = Number(json.error.code);
+        if ((upstreamCode === -32429 || isRetryableStatus(upstreamCode)) && attempt < RATE_LIMIT_RETRIES) {
           await sleep(400 * (attempt + 1));
           continue;
+        }
+        if (upstreamCode === -32429 || upstreamCode === 429) {
+          throw createHttpError(503, "upstream_rate_limited", "Upstream Solana data provider is saturated right now", {
+            upstreamStatus: upstreamCode === -32429 ? 429 : upstreamCode,
+          });
         }
         throw new Error(JSON.stringify(json.error));
       }

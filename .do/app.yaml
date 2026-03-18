@@ -56,6 +56,9 @@ services:
       - key: TRACE_ANALYSIS_TTL_MS
         scope: RUN_TIME
         value: "3600000"
+      - key: MAX_UPSTREAM_FETCH_CONCURRENCY
+        scope: RUN_TIME
+        value: "24"
 static_sites:
   - name: web
     github:

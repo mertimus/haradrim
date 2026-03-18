@@ -267,6 +267,22 @@ describe("TraceExplorer", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
+  it("shows a provider-busy state for upstream rate limits", async () => {
+    const providerBusyError = Object.assign(
+      new Error("Upstream Solana data provider is saturated right now"),
+      {
+        status: 503,
+        code: "upstream_rate_limited",
+      },
+    );
+    vi.mocked(getTraceAnalysis).mockRejectedValue(providerBusyError);
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await screen.findByText("Trace Provider Busy");
+    expect(screen.getByText("The upstream Solana data provider is saturated right now. Try again shortly.")).toBeTruthy();
+  });
+
   it("resolves visible counterparty labels client-side without showing a global enrichment banner", async () => {
     vi.mocked(getTraceAnalysis).mockResolvedValue(createFlows([{
       signature: "label-1",
