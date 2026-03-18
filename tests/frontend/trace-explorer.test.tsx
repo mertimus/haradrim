@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TraceExplorer } from "../../src/components/TraceExplorer";
 import { getBatchSolDomains, getIdentity } from "@/api";
@@ -107,17 +107,15 @@ describe("TraceExplorer", () => {
       `Only sub-${DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL} SOL transfers were found. SOL dust is hidden by default.`,
     );
 
-    const filterButton = screen.getByRole("button", { name: "Trace filters" });
-    expect(within(filterButton).queryByText("1")).toBeNull();
-
-    fireEvent.click(filterButton);
     const dustToggle = screen.getByLabelText(/Hide SOL dust/) as HTMLInputElement;
     expect(dustToggle.checked).toBe(true);
+    expect(screen.queryByText("1 active")).toBeNull();
 
     fireEvent.click(dustToggle);
 
+    fireEvent.click(screen.getByText("Outflow →"));
     await screen.findByText("Dust Sender");
-    expect(within(filterButton).getByText("1")).toBeTruthy();
+    expect(screen.getByText("1 active")).toBeTruthy();
   });
 
   it("treats default dust hiding as the reset baseline", async () => {
@@ -138,24 +136,21 @@ describe("TraceExplorer", () => {
 
     render(<TraceExplorer initialAddress={ADDRESS} />);
 
-    await screen.findByRole("button", { name: "Trace filters" });
+    await screen.findByLabelText(/Hide SOL dust/);
     expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
-
-    const filterButton = screen.getByRole("button", { name: "Trace filters" });
-    fireEvent.click(filterButton);
 
     const dustToggle = screen.getByLabelText(/Hide SOL dust/) as HTMLInputElement;
     fireEvent.click(dustToggle);
 
     expect(screen.getByRole("button", { name: "Reset" })).toBeTruthy();
-    expect(within(filterButton).getByText("1")).toBeTruthy();
+    expect(screen.getByText("1 active")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
 
     await waitFor(() => {
       expect((screen.getByLabelText(/Hide SOL dust/) as HTMLInputElement).checked).toBe(true);
       expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
-      expect(within(filterButton).queryByText("1")).toBeNull();
+      expect(screen.queryByText("1 active")).toBeNull();
     });
   });
 
@@ -193,10 +188,7 @@ describe("TraceExplorer", () => {
 
     render(<TraceExplorer initialAddress={ADDRESS} />);
 
-    await screen.findByText("Big Sender");
-
-    fireEvent.click(screen.getByRole("button", { name: "Trace filters" }));
-    fireEvent.change(screen.getByLabelText("From"), {
+    fireEvent.change(await screen.findByLabelText("From"), {
       target: { value: "2024-04-08" },
     });
     fireEvent.change(screen.getByLabelText("To"), {
@@ -207,5 +199,66 @@ describe("TraceExplorer", () => {
       `Only sub-${DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL} SOL transfers were found. SOL dust is hidden by default.`,
     );
     expect(screen.queryByText("No flows match the current filters")).toBeNull();
+  });
+
+  it("starts with both outflow and inflow groups collapsed", async () => {
+    vi.mocked(getTraceAnalysis).mockResolvedValue(createFlows([
+      {
+        signature: "outflow-1",
+        timestamp: 1712620800,
+        direction: "outflow",
+        counterparty: COUNTERPARTY,
+        counterpartyLabel: "Outflow Sender",
+        assetId: NATIVE_SOL_ASSET_ID,
+        kind: "native",
+        decimals: 9,
+        rawAmount: "5000000",
+        uiAmount: 0.005,
+        symbol: "SOL",
+        name: "Native SOL",
+      },
+      {
+        signature: "inflow-1",
+        timestamp: 1712620810,
+        direction: "inflow",
+        counterparty: "5Wj7xUoYJfM4pr2m6Q1t8Q9VK2h8jHZnL9vFq8avR4Ns",
+        counterpartyLabel: "Inflow Sender",
+        assetId: NATIVE_SOL_ASSET_ID,
+        kind: "native",
+        decimals: 9,
+        rawAmount: "7000000",
+        uiAmount: 0.007,
+        symbol: "SOL",
+        name: "Native SOL",
+      },
+    ]));
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await screen.findByText("Outflow →");
+    expect(screen.queryByText("Outflow Sender")).toBeNull();
+    expect(screen.queryByText("Inflow Sender")).toBeNull();
+
+    fireEvent.click(screen.getByText("Outflow →"));
+    await screen.findByText("Outflow Sender");
+    expect(screen.queryByText("Inflow Sender")).toBeNull();
+  });
+
+  it("shows a dedicated rate-limit state for trace 429s", async () => {
+    const rateLimitError = Object.assign(
+      new Error("Session heavy-request budget exceeded"),
+      {
+        status: 429,
+        code: "session_budget_exceeded",
+        details: { retryAfterSec: 37 },
+      },
+    );
+    vi.mocked(getTraceAnalysis).mockRejectedValue(rateLimitError);
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await screen.findByText("Trace Temporarily Rate Limited");
+    expect(screen.getByText("Too many heavy trace requests were made recently. Try again in about 37s.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 });

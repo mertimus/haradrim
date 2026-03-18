@@ -31,9 +31,9 @@ export const BIRDEYE_API_KEY = trimEnv("BIRDEYE_API_KEY");
 export const SESSION_COOKIE_NAME = trimEnv("SESSION_COOKIE_NAME") || "haradrim_sid";
 export const SESSION_SECRET = trimEnv("SESSION_SECRET") || randomBytes(32).toString("hex");
 export const SESSION_WINDOW_MS = Number(process.env.SESSION_WINDOW_MS ?? 10 * 60 * 1000);
-export const SESSION_BUDGET_UNITS = Number(process.env.SESSION_BUDGET_UNITS ?? 40);
+export const SESSION_BUDGET_UNITS = Number(process.env.SESSION_BUDGET_UNITS ?? 120);
 export const IP_WINDOW_MS = Number(process.env.IP_WINDOW_MS ?? 10 * 60 * 1000);
-export const IP_BUDGET_UNITS = Number(process.env.IP_BUDGET_UNITS ?? 120);
+export const IP_BUDGET_UNITS = Number(process.env.IP_BUDGET_UNITS ?? 360);
 
 export const CACHE_MAX_ENTRIES = Number(process.env.CACHE_MAX_ENTRIES ?? 10_000);
 export const CACHE_MAX_BODY_BYTES = Number(process.env.CACHE_MAX_BODY_BYTES ?? 2_000_000);

@@ -34,7 +34,7 @@ export const HEAVY_ROUTE_POLICIES = {
   },
   traceAnalysis: {
     routeKey: "trace-analysis",
-    cost: 10,
+    cost: 8,
     concurrencyLabel: "trace-analysis",
     maxConcurrency: MAX_TRACE_ANALYSIS_CONCURRENCY,
   },
@@ -87,6 +87,17 @@ export const HEAVY_ROUTE_POLICIES = {
     maxConcurrency: MAX_STABLECOIN_DASHBOARD_CONCURRENCY,
   },
 };
+
+export function getTraceAnalysisPolicy(limitRaw) {
+  const limit = Number(limitRaw);
+  if (Number.isFinite(limit) && limit > 0 && limit <= 2_000) {
+    return {
+      ...HEAVY_ROUTE_POLICIES.traceAnalysis,
+      cost: 3,
+    };
+  }
+  return HEAVY_ROUTE_POLICIES.traceAnalysis;
+}
 
 function pruneUsageStore(store, now = Date.now()) {
   for (const [key, entry] of store.entries()) {
@@ -291,5 +302,6 @@ export const guardInternals = {
   consumeUsage,
   decodeSessionToken,
   encodeSessionToken,
+  getTraceAnalysisPolicy,
   parseCookies,
 };

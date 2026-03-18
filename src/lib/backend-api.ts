@@ -4,6 +4,12 @@ import type { CounterpartyFlow, ParsedTransaction } from "@/lib/parse-transactio
 import type { TraceNodeFlows } from "@/lib/trace-types";
 import type { ForensicEvidenceEdge, SuspiciousCluster } from "@/lib/suspicious-clusters";
 
+export interface BackendApiError extends Error {
+  status?: number;
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
 export interface WalletAnalysisResult {
   address: string;
   counterparties: CounterpartyFlow[];
@@ -303,15 +309,27 @@ async function fetchJson<T>(path: string, options?: FetchJsonOptions & { method?
     const text = await res.text();
     if (!res.ok) {
       let message = `Request failed (${res.status})`;
+      let code: string | undefined;
+      let details: Record<string, unknown> | undefined;
       try {
         const payload = text ? JSON.parse(text) : null;
         if (payload?.message || payload?.error) {
           message = payload.message ?? payload.error;
         }
+        if (payload?.error && typeof payload.error === "string") {
+          code = payload.error;
+        }
+        if (payload?.details && typeof payload.details === "object") {
+          details = payload.details as Record<string, unknown>;
+        }
       } catch {
         // Server returned non-JSON (e.g. HTML error page) — use status text
       }
-      throw new Error(message);
+      const error = new Error(message) as BackendApiError;
+      error.status = res.status;
+      error.code = code;
+      error.details = details;
+      throw error;
     }
     const payload = text ? JSON.parse(text) : null;
     return payload as T;

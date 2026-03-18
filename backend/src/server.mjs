@@ -31,6 +31,7 @@ import {
 import {
   createHttpError,
   enforceHeavyRouteBudget,
+  getTraceAnalysisPolicy,
   getGuardStats,
   HEAVY_ROUTE_POLICIES,
   withConcurrencyLimit,
@@ -416,6 +417,7 @@ async function handleWalletAnalysis(req, res, address, searchParams) {
 async function handleTraceAnalysis(req, res, address, searchParams) {
   const range = parseRange(searchParams);
   const limit = searchParams.get("limit");
+  const tracePolicy = getTraceAnalysisPolicy(limit);
   const cacheKey = `trace-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}:${limit ?? "full"}`;
   const cached = getCachedValue(cacheKey);
   if (cached) {
@@ -434,10 +436,10 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
     return;
   }
 
-  enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.traceAnalysis);
+  enforceHeavyRouteBudget(req, res, tracePolicy);
   const result = await withConcurrencyLimit(
-    HEAVY_ROUTE_POLICIES.traceAnalysis.concurrencyLabel,
-    HEAVY_ROUTE_POLICIES.traceAnalysis.maxConcurrency,
+    tracePolicy.concurrencyLabel,
+    tracePolicy.maxConcurrency,
     () => withInflightValue(cacheKey, async () => {
       const result = await analyzeTrace(address, range, (enriched) => {
         try {

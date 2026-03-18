@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import type { Node, Edge } from "@xyflow/react";
-import { ChevronDown, ChevronRight, Copy, Check, RotateCcw, Filter, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, RotateCcw, Search } from "lucide-react";
 import { ExplorerLanding } from "@/components/ExplorerLanding";
 import { SearchBar } from "@/components/SearchBar";
 import { TraceGraph } from "@/components/TraceGraph";
@@ -9,6 +9,7 @@ import { getIdentity, getBatchSolDomains } from "@/api";
 import type { WalletIdentity } from "@/api";
 import { getTraceAnalysis, parseTransactions } from "@/lib/backend-api";
 import type { EnhancedTransaction } from "@/lib/backend-api";
+import type { BackendApiError } from "@/lib/backend-api";
 import {
   DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL,
   NATIVE_SOL_ASSET_ID,
@@ -77,6 +78,41 @@ function formatDateSpan(firstSeen: number, lastSeen: number): string {
 
 function createFreshTraceFlowFilters(): TraceFlowFilters {
   return { ...DEFAULT_TRACE_FLOW_FILTERS };
+}
+
+interface TracePanelErrorState {
+  title: string;
+  message: string;
+  retryAfterSec?: number;
+}
+
+function formatRetryDelay(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.ceil(seconds / 60);
+  return `${minutes}m`;
+}
+
+function describeTracePanelError(error: unknown, fallbackMessage: string): TracePanelErrorState {
+  const message = error instanceof Error ? error.message : fallbackMessage;
+  const backendError = error as BackendApiError | undefined;
+  const status = Number(backendError?.status);
+  const retryAfterRaw = backendError?.details?.retryAfterSec;
+  const retryAfterSec = Number(retryAfterRaw);
+
+  if (status === 429 || message.includes("429")) {
+    return {
+      title: "Trace Temporarily Rate Limited",
+      message: Number.isFinite(retryAfterSec) && retryAfterSec > 0
+        ? `Too many heavy trace requests were made recently. Try again in about ${formatRetryDelay(retryAfterSec)}.`
+        : "Too many heavy trace requests were made recently. Wait a bit, then retry.",
+      ...(Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? { retryAfterSec } : {}),
+    };
+  }
+
+  return {
+    title: "Trace Request Failed",
+    message,
+  };
 }
 
 function countActiveTraceFlowFilters(filters: TraceFlowFilters): number {
@@ -307,10 +343,9 @@ export function TraceExplorer({
   const [selectedNodeAddr, setSelectedNodeAddr] = useState<string | null>(null);
   const [panelLoading, setPanelLoading] = useState(false);
   const [panelData, setPanelData] = useState<TraceNodeFlows | null>(null);
-  const [panelError, setPanelError] = useState<string | null>(null);
+  const [panelError, setPanelError] = useState<TracePanelErrorState | null>(null);
   const [flowFilters, setFlowFilters] = useState<TraceFlowFilters>(createFreshTraceFlowFilters);
-  const [collapsed, setCollapsed] = useState({ outflow: false, inflow: true });
-  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const [collapsed, setCollapsed] = useState({ outflow: true, inflow: true });
   const [cpSearch, setCpSearch] = useState("");
   const [domainMap, setDomainMap] = useState<Map<string, string>>(new Map());
   const [panelMode, setPanelMode] = useState<"node" | "edge">("node");
@@ -463,8 +498,7 @@ export function TraceExplorer({
     setPanelData(null);
     setPanelError(null);
     setFlowFilters(createFreshTraceFlowFilters());
-    setCollapsed({ outflow: false, inflow: true });
-    setFiltersExpanded(false);
+    setCollapsed({ outflow: true, inflow: true });
     setCpSearch("");
     setPanelMode("node");
     setSelectedEdge(null);
@@ -498,8 +532,7 @@ export function TraceExplorer({
     setPanelData(null);
     setPanelError(null);
     setFlowFilters(createFreshTraceFlowFilters());
-    setCollapsed({ outflow: false, inflow: true });
-    setFiltersExpanded(false);
+    setCollapsed({ outflow: true, inflow: true });
     setCpSearch("");
     setPanelMode("node");
     setSelectedEdge(null);
@@ -566,7 +599,7 @@ export function TraceExplorer({
     setPanelLoading(true);
     setPanelData(null);
     setPanelError(null);
-    setCollapsed({ outflow: false, inflow: true });
+    setCollapsed({ outflow: true, inflow: true });
     setCpSearch("");
 
     try {
@@ -576,7 +609,7 @@ export function TraceExplorer({
       setPanelData(data);
     } catch (err) {
       if (rid === panelRequestIdRef.current) {
-        setPanelError(err instanceof Error ? err.message : "Failed to fetch trace flows");
+        setPanelError(describeTracePanelError(err, "Failed to fetch trace flows"));
       }
       console.error("Failed to fetch trace flows:", err);
     } finally {
@@ -624,7 +657,7 @@ export function TraceExplorer({
       setPanelData(data);
     } catch (err) {
       if (rid === panelRequestIdRef.current) {
-        setPanelError(err instanceof Error ? err.message : "Full scan failed");
+        setPanelError(describeTracePanelError(err, "Full scan failed"));
       }
     } finally {
       if (rid === panelRequestIdRef.current) setPanelLoading(false);
@@ -1149,8 +1182,23 @@ export function TraceExplorer({
                 </span>
               </div>
             ) : panelError ? (
-              <div className="flex-1 flex items-center justify-center px-4 text-center">
-                <span className="font-mono text-[10px] text-destructive/80">{panelError}</span>
+              <div className="flex-1 flex items-center justify-center px-4">
+                <div className="max-w-sm rounded border border-destructive/30 bg-destructive/5 px-4 py-3 text-center">
+                  <div className="font-mono text-[10px] uppercase tracking-widest text-destructive/80">
+                    {panelError.title}
+                  </div>
+                  <div className="mt-2 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                    {panelError.message}
+                  </div>
+                  {selectedNodeAddr && (
+                    <button
+                      onClick={() => void handleNodeClick(selectedNodeAddr)}
+                      className="mt-3 rounded border border-destructive/30 px-2 py-1 font-mono text-[8px] uppercase tracking-widest text-destructive/80 transition-colors hover:bg-destructive/10"
+                    >
+                      Retry
+                    </button>
+                  )}
+                </div>
               </div>
             ) : !panelData ? (
               <div className="flex-1 flex items-center justify-center">
@@ -1183,6 +1231,11 @@ export function TraceExplorer({
                       )}
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
+                      {activeFilterCount > 0 && (
+                        <span className="rounded border border-primary/30 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-widest text-primary/80">
+                          {activeFilterCount} active
+                        </span>
+                      )}
                       {hasActiveFilters && (
                         <button
                           onClick={() => setFlowFilters(createFreshTraceFlowFilters())}
@@ -1192,98 +1245,83 @@ export function TraceExplorer({
                           Reset
                         </button>
                       )}
-                      <button
-                        onClick={() => setFiltersExpanded((v) => !v)}
-                        aria-label="Trace filters"
-                        className="relative inline-flex items-center rounded border border-border/60 p-1 cursor-pointer text-muted-foreground hover:text-primary transition-colors"
-                      >
-                        <Filter className="h-3 w-3" />
-                        {activeFilterCount > 0 && (
-                          <span className="absolute -right-1 -top-1 flex h-3 min-w-[12px] items-center justify-center rounded-full bg-primary px-0.5 font-mono text-[7px] font-bold text-primary-foreground">
-                            {activeFilterCount}
-                          </span>
-                        )}
-                      </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Expandable filter controls */}
-                {filtersExpanded && (
-                  <div className="flex-none border-b border-border px-3 py-2 space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="space-y-1">
-                        <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">From</span>
-                        <input
-                          type="date"
-                          value={flowFilters.dateFrom}
-                          max={flowFilters.dateTo || undefined}
-                          onChange={(e) => setFlowFilters((current) => ({ ...current, dateFrom: e.target.value }))}
-                          className="w-full rounded border border-border/50 bg-background px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/60 focus:outline-none"
-                        />
-                      </label>
-                      <label className="space-y-1">
-                        <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">To</span>
-                        <input
-                          type="date"
-                          value={flowFilters.dateTo}
-                          min={flowFilters.dateFrom || undefined}
-                          onChange={(e) => setFlowFilters((current) => ({ ...current, dateTo: e.target.value }))}
-                          className="w-full rounded border border-border/50 bg-background px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/60 focus:outline-none"
-                        />
-                      </label>
-                    </div>
-
-                    <TokenFilterDropdown
-                      label="Asset"
-                      value={flowFilters.assetId}
-                      allValue={TRACE_ALL_ASSETS}
-                      options={assetOptions}
-                      onChange={(v) => setFlowFilters((current) => ({ ...current, assetId: v }))}
-                    />
-
-                    <label className="flex items-center gap-2 rounded border border-border/40 px-2 py-1.5 text-[10px] text-foreground/80">
+                <div className="flex-none border-b border-border px-3 py-2 space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="space-y-1">
+                      <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">From</span>
                       <input
-                        type="checkbox"
-                        checked={flowFilters.hideSolDust}
-                        onChange={(e) => setFlowFilters((current) => ({ ...current, hideSolDust: e.target.checked }))}
-                        className="h-3.5 w-3.5 rounded border-border/60 bg-background accent-primary"
+                        type="date"
+                        value={flowFilters.dateFrom}
+                        max={flowFilters.dateTo || undefined}
+                        onChange={(e) => setFlowFilters((current) => ({ ...current, dateFrom: e.target.value }))}
+                        className="w-full rounded border border-border/50 bg-background px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/60 focus:outline-none"
                       />
-                      <span className="font-mono">
-                        Hide SOL dust ({`<${DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL}`} SOL)
-                      </span>
                     </label>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="space-y-1">
-                        <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Min Amount</span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          inputMode="decimal"
-                          value={flowFilters.minAmount}
-                          onChange={(e) => setFlowFilters((current) => ({ ...current, minAmount: e.target.value }))}
-                          placeholder="0"
-                          className="w-full rounded border border-border/50 bg-background px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/60 focus:outline-none"
-                        />
-                      </label>
-                      <label className="space-y-1">
-                        <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Max Amount</span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          inputMode="decimal"
-                          value={flowFilters.maxAmount}
-                          onChange={(e) => setFlowFilters((current) => ({ ...current, maxAmount: e.target.value }))}
-                          placeholder="∞"
-                          className="w-full rounded border border-border/50 bg-background px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/60 focus:outline-none"
-                        />
-                      </label>
-                    </div>
+                    <label className="space-y-1">
+                      <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">To</span>
+                      <input
+                        type="date"
+                        value={flowFilters.dateTo}
+                        min={flowFilters.dateFrom || undefined}
+                        onChange={(e) => setFlowFilters((current) => ({ ...current, dateTo: e.target.value }))}
+                        className="w-full rounded border border-border/50 bg-background px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/60 focus:outline-none"
+                      />
+                    </label>
                   </div>
-                )}
+
+                  <TokenFilterDropdown
+                    label="Asset"
+                    value={flowFilters.assetId}
+                    allValue={TRACE_ALL_ASSETS}
+                    options={assetOptions}
+                    onChange={(v) => setFlowFilters((current) => ({ ...current, assetId: v }))}
+                  />
+
+                  <label className="flex items-center gap-2 rounded border border-border/40 px-2 py-1.5 text-[10px] text-foreground/80">
+                    <input
+                      type="checkbox"
+                      checked={flowFilters.hideSolDust}
+                      onChange={(e) => setFlowFilters((current) => ({ ...current, hideSolDust: e.target.checked }))}
+                      className="h-3.5 w-3.5 rounded border-border/60 bg-background accent-primary"
+                    />
+                    <span className="font-mono">
+                      Hide SOL dust ({`<${DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL}`} SOL)
+                    </span>
+                  </label>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="space-y-1">
+                      <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Min Amount</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        inputMode="decimal"
+                        value={flowFilters.minAmount}
+                        onChange={(e) => setFlowFilters((current) => ({ ...current, minAmount: e.target.value }))}
+                        placeholder="0"
+                        className="w-full rounded border border-border/50 bg-background px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/60 focus:outline-none"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="font-mono text-[8px] uppercase tracking-widest text-muted-foreground">Max Amount</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        inputMode="decimal"
+                        value={flowFilters.maxAmount}
+                        onChange={(e) => setFlowFilters((current) => ({ ...current, maxAmount: e.target.value }))}
+                        placeholder="∞"
+                        className="w-full rounded border border-border/50 bg-background px-2 py-1.5 font-mono text-[10px] text-foreground focus:border-primary/60 focus:outline-none"
+                      />
+                    </label>
+                  </div>
+                </div>
 
                 {panelData.events.length === 0 ? (
                   <div className="flex-1 flex items-center justify-center px-4 text-center">
