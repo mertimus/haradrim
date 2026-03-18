@@ -6,6 +6,10 @@ import {
   resolve,
 } from "@bonfida/spl-name-service";
 import { cached, cacheGet, cacheSet } from "@/lib/cache";
+import {
+  maybeRedirectForCloudflareChallenge,
+  waitForCloudflareChallengeNavigation,
+} from "@/lib/cloudflare-challenge";
 import { HELIUS_GTFA_RPC_URL, HELIUS_RPC_URL, HELIUS_WALLET_API_BASE } from "@/lib/constants";
 
 // TTLs
@@ -225,7 +229,11 @@ async function fetchWithTimeout(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    const response = await fetch(input, { ...init, signal: controller.signal });
+    if (maybeRedirectForCloudflareChallenge(response, input)) {
+      return await waitForCloudflareChallengeNavigation<Response>();
+    }
+    return response;
   } finally {
     clearTimeout(timeoutId);
   }

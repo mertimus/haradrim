@@ -1,4 +1,8 @@
 import { API_BASE_URL } from "@/lib/constants";
+import {
+  maybeRedirectForCloudflareChallenge,
+  waitForCloudflareChallengeNavigation,
+} from "@/lib/cloudflare-challenge";
 import type { TokenHolder } from "@/birdeye-api";
 import type { CounterpartyFlow, ParsedTransaction } from "@/lib/parse-transactions";
 import type { TraceNodeFlows } from "@/lib/trace-types";
@@ -306,6 +310,9 @@ async function fetchJson<T>(path: string, options?: FetchJsonOptions & { method?
       init.headers = { "content-type": "application/json" };
     }
     const res = await fetch(`${API_BASE_URL}${path}`, init);
+    if (maybeRedirectForCloudflareChallenge(res, `${API_BASE_URL}${path}`)) {
+      return await waitForCloudflareChallengeNavigation<T>();
+    }
     const text = await res.text();
     if (!res.ok) {
       let message = `Request failed (${res.status})`;
