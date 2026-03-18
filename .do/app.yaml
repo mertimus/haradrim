@@ -20,8 +20,8 @@ services:
       deploy_on_push: true
     source_dir: backend
     environment_slug: node-js
-    instance_count: 1
-    instance_size_slug: basic-xs
+    instance_count: 3
+    instance_size_slug: professional-l
     http_port: 8080
     run_command: npm start
     health_check:
