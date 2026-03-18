@@ -804,9 +804,7 @@ export function TraceExplorer({
     if (!traceState || !canExpandTraceCounterparty(cp)) return;
     const newState = addCounterpartiesToGraph(traceState, sourceAddr, [applyDomainLabel(cp)], direction);
     setTraceGraphState(newState);
-    // Defer inspection to next tick so state updates flush first
-    queueMicrotask(() => void handleNodeClick(cp.address));
-  }, [traceState, applyDomainLabel, handleNodeClick, setTraceGraphState]);
+  }, [traceState, applyDomainLabel, setTraceGraphState]);
 
   const handleAddAll = useCallback((
     sourceAddr: string,

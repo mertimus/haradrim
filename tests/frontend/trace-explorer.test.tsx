@@ -23,7 +23,20 @@ vi.mock("@/lib/backend-api", () => ({
 }));
 
 vi.mock("@/components/TraceGraph", () => ({
-  TraceGraph: () => <div data-testid="trace-graph" />,
+  TraceGraph: ({ nodes = [], onNodeClick }: { nodes?: Array<{ id: string; data?: { label?: string } }>; onNodeClick: (address: string) => void }) => (
+    <div data-testid="trace-graph">
+      {nodes.map((node) => (
+        <button
+          key={node.id}
+          type="button"
+          data-testid={`trace-node-${node.id}`}
+          onClick={() => onNodeClick(node.id)}
+        >
+          {node.data?.label ?? node.id}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 const ADDRESS = "86xCnPeV69n6t3DnyGvkKobf9FdN2H9oiVDdaMpo2MMY";
@@ -445,5 +458,49 @@ describe("TraceExplorer", () => {
     fireEvent.click(await screen.findByText("Outflow →"));
     await screen.findByText("Program Counterparty");
     expect(screen.getByText("wallet only")).toBeTruthy();
+  });
+
+  it("adds a node to the graph without tracing it until the user clicks that node", async () => {
+    vi.mocked(getTraceAnalysis)
+      .mockResolvedValueOnce(createFlows([{
+        signature: "seed-out-1",
+        timestamp: 1712620800,
+        direction: "outflow",
+        counterparty: COUNTERPARTY,
+        counterpartyLabel: "Child Wallet",
+        counterpartyAccountType: "wallet",
+        assetId: NATIVE_SOL_ASSET_ID,
+        kind: "native",
+        decimals: 9,
+        rawAmount: "5000000",
+        uiAmount: 0.005,
+        symbol: "SOL",
+        name: "Native SOL",
+      }]))
+      .mockResolvedValueOnce(createFlows([], { address: COUNTERPARTY }));
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await waitFor(() => {
+      expect(getTraceAnalysis).toHaveBeenCalledTimes(1);
+      expect(getTraceAnalysis).toHaveBeenCalledWith(ADDRESS, undefined, { limit: 2000 });
+    });
+
+    fireEvent.click(await screen.findByText("Outflow →"));
+    await screen.findByText("Child Wallet");
+
+    fireEvent.click(screen.getByRole("button", { name: "+" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`trace-node-${COUNTERPARTY}`)).toBeTruthy();
+    });
+    expect(getTraceAnalysis).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId(`trace-node-${COUNTERPARTY}`));
+
+    await waitFor(() => {
+      expect(getTraceAnalysis).toHaveBeenCalledTimes(2);
+      expect(getTraceAnalysis).toHaveBeenLastCalledWith(COUNTERPARTY, undefined, { limit: 2000 });
+    });
   });
 });
