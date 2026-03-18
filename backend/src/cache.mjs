@@ -14,9 +14,19 @@ function pruneCache(now = Date.now()) {
   }
 }
 
+function touchCacheEntry(key, entry) {
+  cache.delete(key);
+  cache.set(key, entry);
+}
+
 export function getCacheSize() {
   pruneCache();
   return cache.size;
+}
+
+export function clearCache() {
+  cache.clear();
+  inflight.clear();
 }
 
 export function getCachedValue(key) {
@@ -26,6 +36,7 @@ export function getCachedValue(key) {
     cache.delete(key);
     return null;
   }
+  touchCacheEntry(key, entry);
   return entry.value;
 }
 
@@ -36,10 +47,15 @@ export function getInflightValue(key) {
 export function setCachedValue(key, value, ttlMs) {
   if (ttlMs <= 0) return;
   pruneCache();
-  cache.set(key, {
+  const entry = {
     value,
     expiresAt: Date.now() + ttlMs,
-  });
+  };
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, entry);
+  pruneCache();
 }
 
 export async function cachedValue(key, ttlMs, loader) {

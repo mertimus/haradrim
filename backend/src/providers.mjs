@@ -14,12 +14,53 @@ import {
   RATE_LIMIT_RETRIES,
   TARGET_GTFA_TXS_PER_SLICE,
 } from "./config.mjs";
-import { cachedValue } from "./cache.mjs";
+import {
+  cachedValue,
+  getCachedValue,
+  setCachedValue,
+  withInflightValue,
+} from "./cache.mjs";
 
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const OWNER_MINT_TOKEN_ACCOUNTS_TTL_MS = 15 * 60 * 1000;
+const IDENTITY_TTL_MS = 30 * 60 * 1000;
+const TOKEN_METADATA_TTL_MS = 60 * 60 * 1000;
+const ACCOUNT_TYPE_TTL_MS = 60 * 60 * 1000;
+const CACHE_MISS = Object.freeze({ __cacheMiss: true });
+
+function getPerItemCacheKey(namespace, key) {
+  return `${namespace}:${key}`;
+}
+
+function readPerItemCache(keys, namespace) {
+  const hits = new Map();
+  const missing = [];
+
+  for (const key of keys) {
+    const cached = getCachedValue(getPerItemCacheKey(namespace, key));
+    if (cached === null) {
+      missing.push(key);
+      continue;
+    }
+    if (cached !== CACHE_MISS) {
+      hits.set(key, cached);
+    }
+  }
+
+  return { hits, missing };
+}
+
+function writePerItemCache(keys, namespace, values, ttlMs) {
+  for (const key of keys) {
+    setCachedValue(
+      getPerItemCacheKey(namespace, key),
+      values.get(key) ?? CACHE_MISS,
+      ttlMs,
+    );
+  }
+}
 
 export async function fetchWithTimeout(input, init = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -441,136 +482,154 @@ export async function getBatchIdentity(addresses) {
   const unique = [...new Set(addresses)].filter(Boolean);
   if (unique.length === 0) return new Map();
 
-  const cacheKey = `identity:${unique.slice().sort().join(",")}`;
-  return cachedValue(cacheKey, 30 * 60 * 1000, async () => {
-    const chunks = [];
-    for (let i = 0; i < unique.length; i += 100) {
-      chunks.push(unique.slice(i, i + 100));
-    }
+  const { hits, missing } = readPerItemCache(unique, "identity:item");
+  if (missing.length === 0) return hits;
 
-    const results = await mapWithConcurrency(
-      chunks,
-      MAX_METADATA_FETCH_CONCURRENCY,
-      async (chunk) => {
-        try {
-          const json = await walletApiJson("/v1/wallet/batch-identity", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ addresses: chunk }),
-          });
-          return Array.isArray(json) ? json : [];
-        } catch {
-          return [];
-        }
-      },
-    );
+  const chunks = [];
+  for (let i = 0; i < missing.length; i += 100) {
+    chunks.push(missing.slice(i, i + 100));
+  }
 
-    const map = new Map();
-    for (const batch of results) {
-      for (const item of batch) {
-        if (!item?.address) continue;
-        map.set(item.address, {
-          address: item.address,
-          name: item.name,
-          label: item.name,
-          category: item.category,
-          tags: item.tags ?? [],
+  const results = await mapWithConcurrency(
+    chunks,
+    MAX_METADATA_FETCH_CONCURRENCY,
+    async (chunk) => withInflightValue(`identity:chunk:${chunk.join(",")}`, async () => {
+      try {
+        const json = await walletApiJson("/v1/wallet/batch-identity", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ addresses: chunk }),
         });
+        return Array.isArray(json) ? json : [];
+      } catch {
+        return [];
       }
+    }),
+  );
+
+  const fetched = new Map();
+  for (const batch of results) {
+    for (const item of batch) {
+      if (!item?.address) continue;
+      fetched.set(item.address, {
+        address: item.address,
+        name: item.name,
+        label: item.name,
+        category: item.category,
+        tags: item.tags ?? [],
+      });
     }
-    return map;
-  });
+  }
+
+  writePerItemCache(missing, "identity:item", fetched, IDENTITY_TTL_MS);
+  for (const [address, identity] of fetched) {
+    hits.set(address, identity);
+  }
+
+  return hits;
 }
 
 export async function getTokenMetadataBatch(mints) {
   const unique = [...new Set(mints)].filter(Boolean);
   if (unique.length === 0) return new Map();
 
-  const cacheKey = `tokenMeta:${unique.slice().sort().join(",")}`;
-  return cachedValue(cacheKey, 60 * 60 * 1000, async () => {
-    const chunks = [];
-    for (let i = 0; i < unique.length; i += 100) {
-      chunks.push(unique.slice(i, i + 100));
-    }
+  const { hits, missing } = readPerItemCache(unique, "tokenMeta:item");
+  if (missing.length === 0) return hits;
 
-    const results = await mapWithConcurrency(
-      chunks,
-      MAX_METADATA_FETCH_CONCURRENCY,
-      async (chunk) => {
-        try {
-          const json = await rpcJson("getAssetBatch", { ids: chunk });
-          return Array.isArray(json.result) ? json.result : [];
-        } catch {
-          return [];
-        }
-      },
-    );
+  const chunks = [];
+  for (let i = 0; i < missing.length; i += 100) {
+    chunks.push(missing.slice(i, i + 100));
+  }
 
-    const map = new Map();
-    for (const assets of results) {
-      for (const asset of assets) {
-        if (!asset?.id) continue;
-        const content = asset.content?.metadata;
-        const links = asset.content?.links;
-        const tokenInfo = asset.token_info;
-        map.set(asset.id, {
-          name: content?.name ?? undefined,
-          symbol: content?.symbol ?? tokenInfo?.symbol ?? undefined,
-          logoUri: links?.image ?? asset.content?.json_uri ?? undefined,
-        });
+  const results = await mapWithConcurrency(
+    chunks,
+    MAX_METADATA_FETCH_CONCURRENCY,
+    async (chunk) => withInflightValue(`tokenMeta:chunk:${chunk.join(",")}`, async () => {
+      try {
+        const json = await rpcJson("getAssetBatch", { ids: chunk });
+        return Array.isArray(json.result) ? json.result : [];
+      } catch {
+        return [];
       }
+    }),
+  );
+
+  const fetched = new Map();
+  for (const assets of results) {
+    for (const asset of assets) {
+      if (!asset?.id) continue;
+      const content = asset.content?.metadata;
+      const links = asset.content?.links;
+      const tokenInfo = asset.token_info;
+      fetched.set(asset.id, {
+        name: content?.name ?? undefined,
+        symbol: content?.symbol ?? tokenInfo?.symbol ?? undefined,
+        logoUri: links?.image ?? asset.content?.json_uri ?? undefined,
+      });
     }
-    return map;
-  });
+  }
+
+  writePerItemCache(missing, "tokenMeta:item", fetched, TOKEN_METADATA_TTL_MS);
+  for (const [mint, meta] of fetched) {
+    hits.set(mint, meta);
+  }
+
+  return hits;
 }
 
 export async function getAccountTypesParallel(addresses) {
   const unique = [...new Set(addresses)].filter(Boolean);
   if (unique.length === 0) return new Map();
 
-  const cacheKey = `acctType:${unique.slice().sort().join(",")}`;
-  return cachedValue(cacheKey, 60 * 60 * 1000, async () => {
-    const chunks = [];
-    for (let i = 0; i < unique.length; i += 100) {
-      chunks.push(unique.slice(i, i + 100));
-    }
+  const { hits, missing } = readPerItemCache(unique, "acctType:item");
+  if (missing.length === 0) return hits;
 
-    const results = await mapWithConcurrency(
-      chunks,
-      MAX_ACCOUNT_TYPE_CONCURRENCY,
-      async (chunk) => {
-        try {
-          const json = await rpcJson("getMultipleAccounts", [
-            chunk,
-            { encoding: "jsonParsed", commitment: "confirmed" },
-          ]);
-          const accounts = json.result?.value ?? [];
-          return chunk.map((address, index) => {
-            const info = accounts[index];
-            if (!info) return [address, { type: "unknown" }];
-            if (info.executable) return [address, { type: "program" }];
-            const owner = info.owner;
-            if (owner === SYSTEM_PROGRAM) return [address, { type: "wallet" }];
-            if (owner === TOKEN_PROGRAM || owner === TOKEN_2022_PROGRAM) {
-              const mint = info.data?.parsed?.info?.mint;
-              return [address, { type: "token", ...(mint ? { mint } : {}) }];
-            }
-            return [address, { type: "other" }];
-          });
-        } catch {
-          return chunk.map((address) => [address, { type: "unknown" }]);
-        }
-      },
-    );
+  const chunks = [];
+  for (let i = 0; i < missing.length; i += 100) {
+    chunks.push(missing.slice(i, i + 100));
+  }
 
-    const map = new Map();
-    for (const chunk of results) {
-      for (const [address, info] of chunk) {
-        map.set(address, info);
+  const results = await mapWithConcurrency(
+    chunks,
+    MAX_ACCOUNT_TYPE_CONCURRENCY,
+    async (chunk) => withInflightValue(`acctType:chunk:${chunk.join(",")}`, async () => {
+      try {
+        const json = await rpcJson("getMultipleAccounts", [
+          chunk,
+          { encoding: "jsonParsed", commitment: "confirmed" },
+        ]);
+        const accounts = json.result?.value ?? [];
+        return chunk.map((address, index) => {
+          const info = accounts[index];
+          if (!info) return [address, { type: "unknown" }];
+          if (info.executable) return [address, { type: "program" }];
+          const owner = info.owner;
+          if (owner === SYSTEM_PROGRAM) return [address, { type: "wallet" }];
+          if (owner === TOKEN_PROGRAM || owner === TOKEN_2022_PROGRAM) {
+            const mint = info.data?.parsed?.info?.mint;
+            return [address, { type: "token", ...(mint ? { mint } : {}) }];
+          }
+          return [address, { type: "other" }];
+        });
+      } catch {
+        return chunk.map((address) => [address, { type: "unknown" }]);
       }
+    }),
+  );
+
+  const fetched = new Map();
+  for (const chunk of results) {
+    for (const [address, info] of chunk) {
+      fetched.set(address, info);
     }
-    return map;
-  });
+  }
+
+  writePerItemCache(missing, "acctType:item", fetched, ACCOUNT_TYPE_TTL_MS);
+  for (const [address, info] of fetched) {
+    hits.set(address, info);
+  }
+
+  return hits;
 }
 
 async function fetchOwnerTokenAccountsForProgram(owner, mint, programId) {

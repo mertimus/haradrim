@@ -121,6 +121,29 @@ type CpSortDir = "asc" | "desc";
 
 const TH =
   "font-mono text-[8px] uppercase tracking-wider text-muted-foreground";
+const TRACE_METADATA_POLL_DELAYS_MS = [100, 250, 500, 1000, 2000, 4000, 8000];
+const TRACE_PRIORITY_SNS_LOOKUPS = 40;
+const TRACE_DEFERRED_SNS_LOOKUP_DELAY_MS = 750;
+
+function filterCounterpartiesBySearch(
+  counterparties: TraceCounterparty[],
+  searchQuery: string,
+  domainMap: Map<string, string>,
+): TraceCounterparty[] {
+  if (!searchQuery) return counterparties;
+
+  const q = searchQuery.toLowerCase();
+  return counterparties.filter((cp) => {
+    const label = cp.label?.toLowerCase() ?? "";
+    const addr = cp.address.toLowerCase();
+    const domain = domainMap.get(cp.address)?.toLowerCase() ?? "";
+    return label.includes(q) || addr.includes(q) || domain.includes(q);
+  });
+}
+
+function dedupeCounterpartyAddresses(counterparties: TraceCounterparty[]): string[] {
+  return [...new Set(counterparties.map((cp) => cp.address).filter(Boolean))];
+}
 
 function CpSortIcon({
   col,
@@ -368,9 +391,9 @@ export function TraceExplorer({
     attempt = 1,
     version = flowRequestVersionRef.current.get(address) ?? 0,
   ) => {
-    if (attempt > 6 || pollTimersRef.current.has(address)) return;
+    if (attempt > TRACE_METADATA_POLL_DELAYS_MS.length || pollTimersRef.current.has(address)) return;
 
-    const delay = Math.min(3000 * attempt, 15000);
+    const delay = TRACE_METADATA_POLL_DELAYS_MS[attempt - 1] ?? TRACE_METADATA_POLL_DELAYS_MS.at(-1) ?? 8000;
     const timer = setTimeout(async () => {
       pollTimersRef.current.delete(address);
       try {
@@ -720,14 +743,43 @@ export function TraceExplorer({
 
   const panelCps = useMemo(() => aggregateTraceCounterparties(filteredEvents), [filteredEvents]);
 
-  // Resolve SNS .sol domains for unlabeled counterparties
-  useEffect(() => {
-    const unlabeled = panelCps
-      .filter((cp) => !cp.label && !domainSettledRef.current.has(cp.address) && !domainInflightRef.current.has(cp.address))
-      .map((cp) => cp.address);
-    if (unlabeled.length === 0) return;
+  const outflow = useMemo(
+    () => panelCps
+      .filter((cp) => cp.outflowAssets.length > 0)
+      .sort((a, b) => compareDirectionalCounterparties(a, b, "outflow")),
+    [panelCps],
+  );
+  const inflow = useMemo(
+    () => panelCps
+      .filter((cp) => cp.inflowAssets.length > 0)
+      .sort((a, b) => compareDirectionalCounterparties(a, b, "inflow")),
+    [panelCps],
+  );
+  const visibleOutflow = useMemo(
+    () => filterCounterpartiesBySearch(outflow, cpSearch, domainMap),
+    [outflow, cpSearch, domainMap],
+  );
+  const visibleInflow = useMemo(
+    () => filterCounterpartiesBySearch(inflow, cpSearch, domainMap),
+    [inflow, cpSearch, domainMap],
+  );
+
+  const resolveCounterpartyDomains = useCallback((counterparties: TraceCounterparty[]) => {
+    if (!panelData || panelData.metadataPending) return undefined;
+
+    const unlabeled = dedupeCounterpartyAddresses(
+      counterparties.filter(
+        (cp) => !cp.label
+          && !domainSettledRef.current.has(cp.address)
+          && !domainInflightRef.current.has(cp.address),
+      ),
+    );
+
+    if (unlabeled.length === 0) return undefined;
+
     for (const addr of unlabeled) domainInflightRef.current.add(addr);
     let cancelled = false;
+
     getBatchSolDomains(unlabeled).then((resolved) => {
       if (cancelled) return;
       if (resolved.size > 0) {
@@ -747,26 +799,38 @@ export function TraceExplorer({
         domainInflightRef.current.delete(addr);
       }
     });
+
     return () => {
       cancelled = true;
       for (const addr of unlabeled) {
         domainInflightRef.current.delete(addr);
       }
     };
-  }, [panelCps]);
+  }, [panelData]);
 
-  const outflow = useMemo(
-    () => panelCps
-      .filter((cp) => cp.outflowAssets.length > 0)
-      .sort((a, b) => compareDirectionalCounterparties(a, b, "outflow")),
-    [panelCps],
-  );
-  const inflow = useMemo(
-    () => panelCps
-      .filter((cp) => cp.inflowAssets.length > 0)
-      .sort((a, b) => compareDirectionalCounterparties(a, b, "inflow")),
-    [panelCps],
-  );
+  // Resolve SNS .sol domains for unlabeled counterparties, prioritizing visible rows.
+  useEffect(() => {
+    if (!panelData || panelData.metadataPending) return;
+    const priorityCounterparties = [
+      ...(!collapsed.outflow ? visibleOutflow.slice(0, TRACE_PRIORITY_SNS_LOOKUPS) : []),
+      ...(!collapsed.inflow ? visibleInflow.slice(0, TRACE_PRIORITY_SNS_LOOKUPS) : []),
+    ];
+    return resolveCounterpartyDomains(priorityCounterparties);
+  }, [collapsed.inflow, collapsed.outflow, panelData, resolveCounterpartyDomains, visibleInflow, visibleOutflow]);
+
+  useEffect(() => {
+    if (!panelData || panelData.metadataPending) return;
+
+    let cleanup: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      cleanup = resolveCounterpartyDomains(panelCps);
+    }, TRACE_DEFERRED_SNS_LOOKUP_DELAY_MS);
+
+    return () => {
+      clearTimeout(timer);
+      cleanup?.();
+    };
+  }, [panelCps, panelData, resolveCounterpartyDomains]);
 
   const filteredSummary = useMemo(() => summarizeFilteredEvents(filteredEvents), [filteredEvents]);
   const filteredFirstSeen = filteredSummary.firstSeen;
@@ -1357,14 +1421,7 @@ function FlowGroup({
   }, [counterparties, sortKey, sortDir, direction, domainMap]);
 
   const displayed = useMemo(() => {
-    if (!searchQuery) return sorted;
-    const q = searchQuery.toLowerCase();
-    return sorted.filter((cp) => {
-      const label = cp.label?.toLowerCase() ?? "";
-      const addr = cp.address.toLowerCase();
-      const domain = domainMap.get(cp.address)?.toLowerCase() ?? "";
-      return label.includes(q) || addr.includes(q) || domain.includes(q);
-    });
+    return filterCounterpartiesBySearch(sorted, searchQuery, domainMap);
   }, [sorted, searchQuery, domainMap]);
 
   return (

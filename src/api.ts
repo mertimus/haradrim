@@ -198,6 +198,20 @@ const GTFA_FULL_PAGE_LIMIT = 1000;
 // on wallets where a 1000-tx target starts dropping history.
 const TARGET_GTFA_TXS_PER_SLICE = 700;
 const MAX_TRANSACTION_SLICES = 64;
+const BATCH_CACHE_MISS = { __cacheMiss: true } as const;
+
+function readPerItemCachedObject<T>(namespace: string, key: string, ttlMs: number): T | typeof BATCH_CACHE_MISS | null {
+  return cacheGet<T | typeof BATCH_CACHE_MISS>(`${namespace}:${key}`, ttlMs);
+}
+
+function isBatchCacheMiss(value: unknown): value is typeof BATCH_CACHE_MISS {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && "__cacheMiss" in value
+    && (value as { __cacheMiss?: unknown }).__cacheMiss === true,
+  );
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -760,9 +774,33 @@ async function _getBatchSolDomains(
 export async function getBatchSolDomains(
   addresses: string[],
 ): Promise<Map<string, string>> {
-  const key = addresses.slice().sort().join(",");
-  const obj = await cached("batchSns", key, TTL_SNS, () => _getBatchSolDomains(addresses));
-  return new Map(Object.entries(obj));
+  const unique = [...new Set(addresses)].filter(Boolean);
+  const result = new Map<string, string>();
+  const missing: string[] = [];
+
+  for (const address of unique) {
+    const cachedDomain = readPerItemCachedObject<string>("batchSnsItem", address, TTL_SNS);
+    if (cachedDomain === null) {
+      missing.push(address);
+      continue;
+    }
+    if (!isBatchCacheMiss(cachedDomain)) {
+      result.set(address, cachedDomain);
+    }
+  }
+
+  if (missing.length === 0) return result;
+
+  const resolved = await _getBatchSolDomains(missing);
+  for (const address of missing) {
+    const domain = resolved[address];
+    cacheSet(`batchSnsItem:${address}`, domain ?? BATCH_CACHE_MISS);
+    if (domain) {
+      result.set(address, domain);
+    }
+  }
+
+  return result;
 }
 
 interface RawWalletIdentityResponse {

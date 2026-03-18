@@ -11,6 +11,7 @@ import {
   PORT,
   PROXY_TTL_MS,
   REQUEST_BODY_LIMIT_BYTES,
+  TRACE_ENRICH_WAIT_MS,
   TRACE_ANALYSIS_TTL_MS,
   WALLET_ANALYSIS_TTL_MS,
   ENHANCED_HISTORY_TTL_MS,
@@ -110,6 +111,27 @@ function cacheJsonValueIfSmall(key, payload, ttlMs) {
   }
 
   setCachedValue(key, payload, ttlMs);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForTraceEnrichment(cacheKey, timeoutMs = TRACE_ENRICH_WAIT_MS) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return getCachedValue(cacheKey);
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const cached = getCachedValue(cacheKey);
+    if (cached && !cached.metadataPending) {
+      return cached;
+    }
+    await sleep(50);
+  }
+
+  return getCachedValue(cacheKey);
 }
 
 async function readBody(req, limitBytes = REQUEST_BODY_LIMIT_BYTES) {
@@ -397,6 +419,11 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
   const cacheKey = `trace-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}:${limit ?? "full"}`;
   const cached = getCachedValue(cacheKey);
   if (cached) {
+    if (cached.metadataPending) {
+      const promoted = await waitForTraceEnrichment(cacheKey);
+      sendJson(res, 200, promoted ?? cached);
+      return;
+    }
     sendJson(res, 200, cached);
     return;
   }
@@ -424,6 +451,11 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
       return result;
     }),
   );
+  if (result.metadataPending) {
+    const promoted = await waitForTraceEnrichment(cacheKey);
+    sendJson(res, 200, promoted ?? result);
+    return;
+  }
   sendJson(res, 200, result);
 }
 
