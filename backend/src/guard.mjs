@@ -13,6 +13,7 @@ import {
   MAX_TRACE_ANALYSIS_CONCURRENCY,
   MAX_WALLET_ANALYSIS_CONCURRENCY,
   MAX_STABLECOIN_DASHBOARD_CONCURRENCY,
+  ROUTE_CONCURRENCY_WAIT_MS,
   SESSION_BUDGET_UNITS,
   SESSION_COOKIE_NAME,
   SESSION_SECRET,
@@ -210,6 +211,10 @@ function consumeUsage(store, key, cost, limit, windowMs, now = Date.now()) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function createHttpError(statusCode, error, message, details = {}) {
   const err = new Error(message);
   err.statusCode = statusCode;
@@ -261,14 +266,18 @@ export async function withConcurrencyLimit(label, maxConcurrency, task) {
     return task();
   }
 
-  const active = concurrencyByRoute.get(label) ?? 0;
-  if (active >= maxConcurrency) {
-    throw createHttpError(429, "route_busy", `Too many concurrent ${label} requests`, {
-      routeKey: label,
-    });
+  const startedAt = Date.now();
+  while ((concurrencyByRoute.get(label) ?? 0) >= maxConcurrency) {
+    if (Date.now() - startedAt >= ROUTE_CONCURRENCY_WAIT_MS) {
+      throw createHttpError(429, "route_busy", `Too many concurrent ${label} requests`, {
+        routeKey: label,
+        retryAfterSec: 2,
+      });
+    }
+    await sleep(50);
   }
 
-  concurrencyByRoute.set(label, active + 1);
+  concurrencyByRoute.set(label, (concurrencyByRoute.get(label) ?? 0) + 1);
   try {
     return await task();
   } finally {

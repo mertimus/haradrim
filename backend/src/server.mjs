@@ -436,11 +436,11 @@ async function handleTraceAnalysis(req, res, address, searchParams) {
     return;
   }
 
-  enforceHeavyRouteBudget(req, res, tracePolicy);
   const result = await withConcurrencyLimit(
     tracePolicy.concurrencyLabel,
     tracePolicy.maxConcurrency,
     () => withInflightValue(cacheKey, async () => {
+      enforceHeavyRouteBudget(req, res, tracePolicy);
       const result = await analyzeTrace(address, range, (enriched) => {
         try {
           cacheJsonValueIfSmall(cacheKey, enriched, TRACE_ANALYSIS_TTL_MS);

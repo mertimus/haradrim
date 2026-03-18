@@ -96,8 +96,19 @@ function describeTracePanelError(error: unknown, fallbackMessage: string): Trace
   const message = error instanceof Error ? error.message : fallbackMessage;
   const backendError = error as BackendApiError | undefined;
   const status = Number(backendError?.status);
+  const code = backendError?.code;
   const retryAfterRaw = backendError?.details?.retryAfterSec;
   const retryAfterSec = Number(retryAfterRaw);
+
+  if (code === "route_busy") {
+    return {
+      title: "Trace Workers Are Busy",
+      message: Number.isFinite(retryAfterSec) && retryAfterSec > 0
+        ? `The trace queue is saturated right now. Try again in about ${formatRetryDelay(retryAfterSec)}.`
+        : "The trace queue is saturated right now. Try again in a few seconds.",
+      ...(Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? { retryAfterSec } : {}),
+    };
+  }
 
   if (status === 429 || message.includes("429")) {
     return {

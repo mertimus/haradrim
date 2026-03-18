@@ -41,6 +41,7 @@ export const REQUEST_BODY_LIMIT_BYTES = Number(process.env.REQUEST_BODY_LIMIT_BY
 export const JSON_PROXY_BODY_LIMIT_BYTES = Number(process.env.JSON_PROXY_BODY_LIMIT_BYTES ?? 64_000);
 
 export const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS ?? 15_000);
+export const ROUTE_CONCURRENCY_WAIT_MS = Number(process.env.ROUTE_CONCURRENCY_WAIT_MS ?? 20_000);
 export const PROXY_TTL_MS = Number(process.env.PROXY_TTL_MS ?? 5 * 60 * 1000);
 export const WALLET_ANALYSIS_TTL_MS = Number(process.env.WALLET_ANALYSIS_TTL_MS ?? 5 * 60 * 1000);
 export const TRACE_ANALYSIS_TTL_MS = Number(process.env.TRACE_ANALYSIS_TTL_MS ?? 5 * 60 * 1000);
@@ -67,7 +68,7 @@ export const MAX_ACCOUNT_TYPE_CONCURRENCY = Number(process.env.MAX_ACCOUNT_TYPE_
 export const MAX_METADATA_FETCH_CONCURRENCY = Number(process.env.MAX_METADATA_FETCH_CONCURRENCY ?? 8);
 export const RATE_LIMIT_RETRIES = Number(process.env.RATE_LIMIT_RETRIES ?? 5);
 export const MAX_WALLET_ANALYSIS_CONCURRENCY = Number(process.env.MAX_WALLET_ANALYSIS_CONCURRENCY ?? 2);
-export const MAX_TRACE_ANALYSIS_CONCURRENCY = Number(process.env.MAX_TRACE_ANALYSIS_CONCURRENCY ?? 2);
+export const MAX_TRACE_ANALYSIS_CONCURRENCY = Number(process.env.MAX_TRACE_ANALYSIS_CONCURRENCY ?? 6);
 export const MAX_BALANCE_HISTORY_CONCURRENCY = Number(process.env.MAX_BALANCE_HISTORY_CONCURRENCY ?? 2);
 export const MAX_BALANCE_HISTORY_LEGACY_CONCURRENCY = Number(
   process.env.MAX_BALANCE_HISTORY_LEGACY_CONCURRENCY ?? 1,
