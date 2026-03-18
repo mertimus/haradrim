@@ -53,6 +53,9 @@ services:
       - key: CACHE_MAX_BODY_BYTES
         scope: RUN_TIME
         value: "2000000"
+      - key: TRACE_ANALYSIS_TTL_MS
+        scope: RUN_TIME
+        value: "3600000"
 static_sites:
   - name: web
     github:
