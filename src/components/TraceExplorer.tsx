@@ -5,8 +5,8 @@ import { ExplorerLanding } from "@/components/ExplorerLanding";
 import { SearchBar } from "@/components/SearchBar";
 import { TraceGraph } from "@/components/TraceGraph";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { getIdentity, getBatchSolDomains } from "@/api";
-import type { WalletIdentity } from "@/api";
+import { getIdentity, getBatchIdentity, getTokenMetadataBatch } from "@/api";
+import type { WalletIdentity, TokenMeta } from "@/api";
 import { getTraceAnalysis, parseTransactions } from "@/lib/backend-api";
 import type { EnhancedTransaction } from "@/lib/backend-api";
 import type { BackendApiError } from "@/lib/backend-api";
@@ -18,6 +18,7 @@ import {
   aggregateTraceCounterparties,
   assetLabel,
   compareDirectionalCounterparties,
+  collectTraceAssetOptions,
   filterTraceEvents,
   getDirectionalAssets,
   getDirectionalTxCount,
@@ -168,9 +169,9 @@ type CpSortDir = "asc" | "desc";
 
 const TH =
   "font-mono text-[8px] uppercase tracking-wider text-muted-foreground";
-const TRACE_METADATA_POLL_DELAYS_MS = [100, 250, 500, 1000, 2000, 4000, 8000];
-const TRACE_PRIORITY_SNS_LOOKUPS = 40;
-const TRACE_DEFERRED_SNS_LOOKUP_DELAY_MS = 750;
+const TRACE_PENDING_FLOW_REFRESH_DELAY_MS = 1500;
+const TRACE_PRIORITY_LABEL_LOOKUPS = 40;
+const TRACE_PRIORITY_TOKEN_LOOKUPS = 80;
 
 function filterCounterpartiesBySearch(
   counterparties: TraceCounterparty[],
@@ -190,6 +191,39 @@ function filterCounterpartiesBySearch(
 
 function dedupeCounterpartyAddresses(counterparties: TraceCounterparty[]): string[] {
   return [...new Set(counterparties.map((cp) => cp.address).filter(Boolean))];
+}
+
+function mergeTraceEventMetadata(
+  event: TraceTransferEvent,
+  identityMap: Map<string, WalletIdentity>,
+  tokenMetaMap: Map<string, TokenMeta>,
+): TraceTransferEvent {
+  const identity = identityMap.get(event.counterparty);
+  const tokenMeta = event.mint ? tokenMetaMap.get(event.mint) : undefined;
+  const nextLabel = event.counterpartyLabel ?? identity?.label ?? identity?.name;
+  const nextCategory = event.counterpartyCategory ?? identity?.category;
+  const nextSymbol = event.symbol ?? tokenMeta?.symbol;
+  const nextName = event.name ?? tokenMeta?.name;
+  const nextLogoUri = event.logoUri ?? tokenMeta?.logoUri;
+
+  if (
+    nextLabel === event.counterpartyLabel
+    && nextCategory === event.counterpartyCategory
+    && nextSymbol === event.symbol
+    && nextName === event.name
+    && nextLogoUri === event.logoUri
+  ) {
+    return event;
+  }
+
+  return {
+    ...event,
+    ...(nextLabel ? { counterpartyLabel: nextLabel } : {}),
+    ...(nextCategory ? { counterpartyCategory: nextCategory } : {}),
+    ...(nextSymbol ? { symbol: nextSymbol } : {}),
+    ...(nextName ? { name: nextName } : {}),
+    ...(nextLogoUri ? { logoUri: nextLogoUri } : {}),
+  };
 }
 
 function CpSortIcon({
@@ -359,6 +393,8 @@ export function TraceExplorer({
   const [collapsed, setCollapsed] = useState({ outflow: true, inflow: true });
   const [cpSearch, setCpSearch] = useState("");
   const [domainMap, setDomainMap] = useState<Map<string, string>>(new Map());
+  const [clientIdentityMap, setClientIdentityMap] = useState<Map<string, WalletIdentity>>(new Map());
+  const [clientTokenMetaMap, setClientTokenMetaMap] = useState<Map<string, TokenMeta>>(new Map());
   const [panelMode, setPanelMode] = useState<"node" | "edge">("node");
   const [selectedEdge, setSelectedEdge] = useState<{ source: string; target: string } | null>(null);
   const [enhancedTxns, setEnhancedTxns] = useState<Map<string, EnhancedTransaction>>(new Map());
@@ -372,8 +408,10 @@ export function TraceExplorer({
   const inflightFlowsRef = useRef<Map<string, Promise<TraceNodeFlows>>>(new Map());
   const flowListenersRef = useRef<Map<string, Set<(data: TraceNodeFlows) => void>>>(new Map());
   const panelSubscriptionCleanupRef = useRef<(() => void) | null>(null);
-  const domainSettledRef = useRef<Set<string>>(new Set());
-  const domainInflightRef = useRef<Set<string>>(new Set());
+  const labelSettledRef = useRef<Set<string>>(new Set());
+  const labelInflightRef = useRef<Set<string>>(new Set());
+  const tokenSettledRef = useRef<Set<string>>(new Set());
+  const tokenInflightRef = useRef<Set<string>>(new Set());
   const pollTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const requestIdRef = useRef(0);
   const panelRequestIdRef = useRef(0);
@@ -433,26 +471,20 @@ export function TraceExplorer({
     return true;
   }, [publishFlowUpdate]);
 
-  const scheduleFlowPoll = useCallback((
+  const schedulePendingFlowRefresh = useCallback((
     address: string,
     options: { limit?: number } | undefined,
-    attempt = 1,
     version = flowRequestVersionRef.current.get(address) ?? 0,
   ) => {
-    if (attempt > TRACE_METADATA_POLL_DELAYS_MS.length || pollTimersRef.current.has(address)) return;
+    if (pollTimersRef.current.has(address)) return;
 
-    const delay = TRACE_METADATA_POLL_DELAYS_MS[attempt - 1] ?? TRACE_METADATA_POLL_DELAYS_MS.at(-1) ?? 8000;
     const timer = setTimeout(async () => {
       pollTimersRef.current.delete(address);
       try {
-        const enriched = await getTraceAnalysis(address, undefined, options);
-        if (!commitFlowData(address, version, enriched)) return;
-        if (enriched.metadataPending) scheduleFlowPoll(address, options, attempt + 1, version);
-      } catch (err) {
-        const is429 = err instanceof Error && err.message.includes("429");
-        if (!is429) scheduleFlowPoll(address, options, attempt + 1, version);
-      }
-    }, delay);
+        const refreshed = await getTraceAnalysis(address, undefined, options);
+        commitFlowData(address, version, refreshed);
+      } catch {}
+    }, TRACE_PENDING_FLOW_REFRESH_DELAY_MS);
 
     pollTimersRef.current.set(address, timer);
   }, [commitFlowData]);
@@ -463,7 +495,7 @@ export function TraceExplorer({
     const cached = fetchedFlowsRef.current.get(address);
     if (cached) {
       if (cached.metadataPending) {
-        scheduleFlowPoll(address, opts, 1, flowRequestVersionRef.current.get(address) ?? 0);
+        schedulePendingFlowRefresh(address, opts, flowRequestVersionRef.current.get(address) ?? 0);
       }
       return cached;
     }
@@ -481,7 +513,7 @@ export function TraceExplorer({
         }
 
         if (data.metadataPending) {
-          scheduleFlowPoll(address, opts, 1, requestVersion);
+          schedulePendingFlowRefresh(address, opts, requestVersion);
         }
 
         return data;
@@ -492,7 +524,7 @@ export function TraceExplorer({
 
     inflightFlowsRef.current.set(address, request);
     return request;
-  }, [commitFlowData, scheduleFlowPoll]);
+  }, [commitFlowData, schedulePendingFlowRefresh]);
 
   const resetTrace = useCallback(() => {
     requestIdRef.current += 1;
@@ -574,6 +606,22 @@ export function TraceExplorer({
         if (rid !== requestIdRef.current) return;
         setSeedIdentity(identResult);
         if (!identResult) return;
+
+        setClientIdentityMap((prev) => {
+          if (prev.get(address) === identResult) return prev;
+          const next = new Map(prev);
+          next.set(address, identResult);
+          return next;
+        });
+        const seedLabel = identResult.label ?? identResult.name;
+        if (seedLabel) {
+          setDomainMap((prev) => {
+            if (prev.get(address) === seedLabel) return prev;
+            const next = new Map(prev);
+            next.set(address, seedLabel);
+            return next;
+          });
+        }
 
         const current = traceStateRef.current;
         if (!current || current.seedAddress !== address) return;
@@ -761,13 +809,15 @@ export function TraceExplorer({
     }
   }, [initialAddress, resetTrace, seedAddress, startTrace]);
 
-  const assetOptions = useMemo(() => {
-    if (!panelData) return [] as TraceAssetOption[];
-    return panelData.assets.slice().sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === "native" ? -1 : 1;
-      return b.transferCount - a.transferCount;
-    });
-  }, [panelData]);
+  const displayEvents = useMemo(() => {
+    if (!panelData) return [] as TraceTransferEvent[];
+    return panelData.events.map((event) => mergeTraceEventMetadata(event, clientIdentityMap, clientTokenMetaMap));
+  }, [panelData, clientIdentityMap, clientTokenMetaMap]);
+
+  const assetOptions = useMemo(() => collectTraceAssetOptions(displayEvents).sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "native" ? -1 : 1;
+    return b.transferCount - a.transferCount;
+  }), [displayEvents]);
 
   useEffect(() => {
     if (flowFilters.assetId === TRACE_ALL_ASSETS) return;
@@ -776,16 +826,14 @@ export function TraceExplorer({
   }, [assetOptions, flowFilters.assetId]);
 
   const filteredEvents = useMemo(() => {
-    if (!panelData) return [];
-    return filterTraceEvents(panelData.events, flowFilters);
-  }, [panelData, flowFilters]);
+    return filterTraceEvents(displayEvents, flowFilters);
+  }, [displayEvents, flowFilters]);
   const filteredEventsWithoutDustSuppression = useMemo(() => {
-    if (!panelData) return [];
-    return filterTraceEvents(panelData.events, {
+    return filterTraceEvents(displayEvents, {
       ...flowFilters,
       hideSolDust: false,
     });
-  }, [panelData, flowFilters]);
+  }, [displayEvents, flowFilters]);
 
   const panelCps = useMemo(() => aggregateTraceCounterparties(filteredEvents), [filteredEvents]);
 
@@ -810,73 +858,139 @@ export function TraceExplorer({
     [inflow, cpSearch, domainMap],
   );
 
-  const resolveCounterpartyDomains = useCallback((counterparties: TraceCounterparty[]) => {
-    if (!panelData || panelData.metadataPending) return undefined;
+  useEffect(() => {
+    if (!panelData) return;
 
-    const unlabeled = dedupeCounterpartyAddresses(
-      counterparties.filter(
-        (cp) => !cp.label
-          && !domainSettledRef.current.has(cp.address)
-          && !domainInflightRef.current.has(cp.address),
-      ),
+    const unresolved = dedupeCounterpartyAddresses([
+      ...visibleOutflow.filter((cp) => !cp.label).slice(0, TRACE_PRIORITY_LABEL_LOOKUPS),
+      ...visibleInflow.filter((cp) => !cp.label).slice(0, TRACE_PRIORITY_LABEL_LOOKUPS),
+    ]).filter(
+      (address) => !clientIdentityMap.has(address)
+        && !labelSettledRef.current.has(address)
+        && !labelInflightRef.current.has(address),
     );
 
-    if (unlabeled.length === 0) return undefined;
+    if (unresolved.length === 0) return;
 
-    for (const addr of unlabeled) domainInflightRef.current.add(addr);
     let cancelled = false;
+    for (const address of unresolved) labelInflightRef.current.add(address);
 
-    getBatchSolDomains(unlabeled).then((resolved) => {
+    getBatchIdentity(unresolved).then((resolved) => {
       if (cancelled) return;
+
       if (resolved.size > 0) {
-        setDomainMap((prev) => {
+        setClientIdentityMap((prev) => {
+          let changed = false;
           const next = new Map(prev);
-          for (const [addr, domain] of resolved) next.set(addr, domain);
-          return next;
+          for (const [address, identity] of resolved) {
+            const existing = next.get(address);
+            if (
+              existing?.label === identity.label
+              && existing?.name === identity.name
+              && existing?.category === identity.category
+            ) {
+              continue;
+            }
+            next.set(address, identity);
+            changed = true;
+          }
+          return changed ? next : prev;
+        });
+
+        setDomainMap((prev) => {
+          let changed = false;
+          const next = new Map(prev);
+          for (const [address, identity] of resolved) {
+            const label = identity.label ?? identity.name;
+            if (!label || next.get(address) === label) continue;
+            next.set(address, label);
+            changed = true;
+          }
+          return changed ? next : prev;
         });
       }
-      for (const addr of unlabeled) {
-        domainInflightRef.current.delete(addr);
-        domainSettledRef.current.add(addr);
+
+      for (const address of unresolved) {
+        labelInflightRef.current.delete(address);
+        labelSettledRef.current.add(address);
       }
     }).catch(() => {
       if (cancelled) return;
-      for (const addr of unlabeled) {
-        domainInflightRef.current.delete(addr);
+      for (const address of unresolved) {
+        labelInflightRef.current.delete(address);
       }
     });
 
     return () => {
       cancelled = true;
-      for (const addr of unlabeled) {
-        domainInflightRef.current.delete(addr);
+      for (const address of unresolved) {
+        labelInflightRef.current.delete(address);
       }
     };
-  }, [panelData]);
-
-  // Resolve SNS .sol domains for unlabeled counterparties, prioritizing visible rows.
-  useEffect(() => {
-    if (!panelData || panelData.metadataPending) return;
-    const priorityCounterparties = [
-      ...(!collapsed.outflow ? visibleOutflow.slice(0, TRACE_PRIORITY_SNS_LOOKUPS) : []),
-      ...(!collapsed.inflow ? visibleInflow.slice(0, TRACE_PRIORITY_SNS_LOOKUPS) : []),
-    ];
-    return resolveCounterpartyDomains(priorityCounterparties);
-  }, [collapsed.inflow, collapsed.outflow, panelData, resolveCounterpartyDomains, visibleInflow, visibleOutflow]);
+  }, [clientIdentityMap, panelData, visibleInflow, visibleOutflow]);
 
   useEffect(() => {
-    if (!panelData || panelData.metadataPending) return;
+    if (!panelData) return;
 
-    let cleanup: (() => void) | undefined;
-    const timer = setTimeout(() => {
-      cleanup = resolveCounterpartyDomains(panelCps);
-    }, TRACE_DEFERRED_SNS_LOOKUP_DELAY_MS);
+    const unresolvedMints = assetOptions
+      .filter(
+        (asset) => asset.kind === "token"
+          && asset.mint
+          && !asset.symbol
+          && !asset.name
+          && !clientTokenMetaMap.has(asset.mint)
+          && !tokenSettledRef.current.has(asset.mint)
+          && !tokenInflightRef.current.has(asset.mint),
+      )
+      .slice(0, TRACE_PRIORITY_TOKEN_LOOKUPS)
+      .map((asset) => asset.mint as string);
+
+    if (unresolvedMints.length === 0) return;
+
+    let cancelled = false;
+    for (const mint of unresolvedMints) tokenInflightRef.current.add(mint);
+
+    getTokenMetadataBatch(unresolvedMints).then((resolved) => {
+      if (cancelled) return;
+
+      if (resolved.size > 0) {
+        setClientTokenMetaMap((prev) => {
+          let changed = false;
+          const next = new Map(prev);
+          for (const [mint, meta] of resolved) {
+            const existing = next.get(mint);
+            if (
+              existing?.symbol === meta.symbol
+              && existing?.name === meta.name
+              && existing?.logoUri === meta.logoUri
+            ) {
+              continue;
+            }
+            next.set(mint, meta);
+            changed = true;
+          }
+          return changed ? next : prev;
+        });
+      }
+
+      for (const mint of unresolvedMints) {
+        tokenInflightRef.current.delete(mint);
+        tokenSettledRef.current.add(mint);
+      }
+    }).catch(() => {
+      if (cancelled) return;
+      for (const mint of unresolvedMints) {
+        tokenInflightRef.current.delete(mint);
+      }
+    });
 
     return () => {
-      clearTimeout(timer);
-      cleanup?.();
+      cancelled = true;
+      for (const mint of unresolvedMints) {
+        tokenInflightRef.current.delete(mint);
+      }
     };
-  }, [panelCps, panelData, resolveCounterpartyDomains]);
+  }, [assetOptions, clientTokenMetaMap, panelData]);
 
   const filteredSummary = useMemo(() => summarizeFilteredEvents(filteredEvents), [filteredEvents]);
   const filteredFirstSeen = filteredSummary.firstSeen;
@@ -1231,11 +1345,6 @@ export function TraceExplorer({
                           <span className="text-muted-foreground/60"> · {filteredRange || availableRange}</span>
                         )}
                       </div>
-                      {panelData.metadataPending && (
-                        <div className="font-mono text-[8px] uppercase tracking-widest text-primary/70">
-                          Enriching labels...
-                        </div>
-                      )}
                       {selectedNodeAddr && quickScannedRef.current.has(selectedNodeAddr) && (
                         <button
                           onClick={() => handleFullScan(selectedNodeAddr)}

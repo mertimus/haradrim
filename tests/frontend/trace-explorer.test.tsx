@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TraceExplorer } from "../../src/components/TraceExplorer";
-import { getBatchSolDomains, getIdentity } from "@/api";
+import { getBatchIdentity, getIdentity, getTokenMetadataBatch } from "@/api";
 import { getTraceAnalysis } from "@/lib/backend-api";
 import {
   DEFAULT_TRACE_SOL_DUST_THRESHOLD_SOL,
@@ -11,7 +11,8 @@ import {
 
 vi.mock("@/api", () => ({
   getIdentity: vi.fn(),
-  getBatchSolDomains: vi.fn(async () => new Map()),
+  getBatchIdentity: vi.fn(async () => new Map()),
+  getTokenMetadataBatch: vi.fn(async () => new Map()),
   resolveWalletInput: vi.fn(async (value: string) => value),
   rememberPreferredSolDomain: vi.fn(),
 }));
@@ -28,9 +29,12 @@ vi.mock("@/components/TraceGraph", () => ({
 const ADDRESS = "86xCnPeV69n6t3DnyGvkKobf9FdN2H9oiVDdaMpo2MMY";
 const COUNTERPARTY = "9ZvA5bD5mEBnNsxkVQxgs5gcm4qg3L5BoXxq3GR7oJ6f";
 
-function createFlows(events: TraceNodeFlows["events"]): TraceNodeFlows {
+function createFlows(
+  events: TraceNodeFlows["events"],
+  options: Partial<Pick<TraceNodeFlows, "metadataPending" | "address">> = {},
+): TraceNodeFlows {
   return {
-    address: ADDRESS,
+    address: options.address ?? ADDRESS,
     events,
     assets: [{
       assetId: NATIVE_SOL_ASSET_ID,
@@ -44,7 +48,7 @@ function createFlows(events: TraceNodeFlows["events"]): TraceNodeFlows {
     }],
     firstSeen: events[0]?.timestamp ?? 0,
     lastSeen: events[events.length - 1]?.timestamp ?? 0,
-    metadataPending: false,
+    metadataPending: options.metadataPending ?? false,
   };
 }
 
@@ -53,7 +57,8 @@ describe("TraceExplorer", () => {
     vi.clearAllMocks();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.mocked(getIdentity).mockResolvedValue(null);
-    vi.mocked(getBatchSolDomains).mockResolvedValue(new Map());
+    vi.mocked(getBatchIdentity).mockResolvedValue(new Map());
+    vi.mocked(getTokenMetadataBatch).mockResolvedValue(new Map());
     vi.mocked(getTraceAnalysis).mockResolvedValue({
       address: ADDRESS,
       events: [],
@@ -260,5 +265,81 @@ describe("TraceExplorer", () => {
     await screen.findByText("Trace Workers Are Busy");
     expect(screen.getByText("The trace queue is saturated right now. Try again in about 2s.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+
+  it("resolves visible counterparty labels client-side without showing a global enrichment banner", async () => {
+    vi.mocked(getTraceAnalysis).mockResolvedValue(createFlows([{
+      signature: "label-1",
+      timestamp: 1712620800,
+      direction: "outflow",
+      counterparty: COUNTERPARTY,
+      assetId: NATIVE_SOL_ASSET_ID,
+      kind: "native",
+      decimals: 9,
+      rawAmount: "5000000",
+      uiAmount: 0.005,
+      symbol: "SOL",
+      name: "Native SOL",
+    }], { metadataPending: true }));
+    vi.mocked(getBatchIdentity).mockResolvedValue(new Map([
+      [COUNTERPARTY, {
+        address: COUNTERPARTY,
+        label: "Resolved Counterparty",
+        category: "Exchange",
+      }],
+    ]));
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    await screen.findByText("Outflow →");
+    expect(screen.queryByText("Enriching labels...")).toBeNull();
+
+    fireEvent.click(screen.getByText("Outflow →"));
+    await screen.findByText("Resolved Counterparty");
+  });
+
+  it("resolves token symbols client-side for fast trace results", async () => {
+    const tokenMint = "TokenMint11111111111111111111111111111111111";
+    vi.mocked(getTraceAnalysis).mockResolvedValue({
+      address: ADDRESS,
+      events: [{
+        signature: "token-1",
+        timestamp: 1712620800,
+        direction: "outflow",
+        counterparty: COUNTERPARTY,
+        counterpartyLabel: "Token Sender",
+        assetId: tokenMint,
+        kind: "token",
+        mint: tokenMint,
+        decimals: 6,
+        rawAmount: "420000000",
+        uiAmount: 420,
+      }],
+      assets: [{
+        assetId: tokenMint,
+        kind: "token",
+        mint: tokenMint,
+        decimals: 6,
+        transferCount: 1,
+        txCount: 1,
+        uiAmount: 420,
+      }],
+      firstSeen: 1712620800,
+      lastSeen: 1712620800,
+      metadataPending: true,
+    });
+    vi.mocked(getTokenMetadataBatch).mockResolvedValue(new Map([
+      [tokenMint, {
+        symbol: "TOK",
+        name: "Token",
+      }],
+    ]));
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    fireEvent.click(await screen.findByText("Outflow →"));
+    fireEvent.click(await screen.findByText("Token Sender"));
+
+    await screen.findByText("TOK");
   });
 });
