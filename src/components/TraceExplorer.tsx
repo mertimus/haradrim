@@ -378,6 +378,8 @@ export function TraceExplorer({
   const requestIdRef = useRef(0);
   const panelRequestIdRef = useRef(0);
   const autoSelectRef = useRef<string | null>(null);
+  const isFullHistoryPanelLoad = !!selectedNodeAddr
+    && (selectedNodeAddr === traceState?.seedAddress || !quickScannedRef.current.has(selectedNodeAddr));
 
   const setTraceGraphState = useCallback((nextState: TraceState | null) => {
     traceStateRef.current = nextState;
@@ -993,8 +995,8 @@ export function TraceExplorer({
           <span className="font-mono text-[9px] text-muted-foreground">{nodeCount} Nodes</span>
           <span className="font-mono text-[9px] text-muted-foreground">{edgeCount} Edges</span>
           {loading && (
-            <span className="scanning-text font-mono text-[9px] uppercase tracking-widest text-primary">
-              Loading...
+            <span className="scanning-text font-mono text-[9px] text-primary/85">
+              Scanning all history. This might take a few seconds...
             </span>
           )}
         </div>
@@ -1188,8 +1190,10 @@ export function TraceExplorer({
 
             {panelLoading ? (
               <div className="flex-1 flex items-center justify-center">
-                <span className="scanning-text font-mono text-[10px] uppercase tracking-widest text-primary">
-                  Fetching...
+                <span className="scanning-text font-mono text-[10px] text-primary/85">
+                  {isFullHistoryPanelLoad
+                    ? "Scanning all history. This might take a few seconds..."
+                    : "Scanning recent history..."}
                 </span>
               </div>
             ) : panelError ? (
