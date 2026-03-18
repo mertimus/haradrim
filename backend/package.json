@@ -7,6 +7,9 @@
     "dev": "node server.mjs",
     "start": "node server.mjs"
   },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4"
+  },
   "engines": {
     "node": ">=20"
   }
