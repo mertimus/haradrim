@@ -33,10 +33,14 @@ export function isCloudflareChallengeResponse(
   if (mitigated === "challenge") return true;
 
   const status = Number(response.status);
-  if (status !== 401 && status !== 403) return false;
+  if (status !== 401 && status !== 403 && status !== 429) return false;
 
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-  return contentType.includes("text/html");
+  if (!contentType.includes("text/html")) return false;
+
+  const server = response.headers.get("server")?.toLowerCase() ?? "";
+  const cfRay = response.headers.get("cf-ray");
+  return server.includes("cloudflare") || Boolean(cfRay);
 }
 
 export function maybeRedirectForCloudflareChallenge(

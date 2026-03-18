@@ -28,11 +28,26 @@ describe("cloudflare challenge handling", () => {
       status: 403,
       headers: new Headers({
         "content-type": "text/html; charset=UTF-8",
+        server: "cloudflare",
       }),
       url: "https://api.helius.xyz/v0/transactions",
     };
 
     expect(isCloudflareChallengeResponse(response)).toBe(false);
+  });
+
+  it("detects html 429s from Cloudflare on same-origin api routes", () => {
+    const response = {
+      status: 429,
+      headers: new Headers({
+        "content-type": "text/html; charset=UTF-8",
+        server: "cloudflare",
+        "cf-ray": "test-ray",
+      }),
+      url: `${window.location.origin}/api/traces/test/flows?limit=2000`,
+    };
+
+    expect(isCloudflareChallengeResponse(response)).toBe(true);
   });
 
   it("redirects only once when the challenge cookie expires", () => {
@@ -48,6 +63,25 @@ describe("cloudflare challenge handling", () => {
     };
 
     expect(maybeRedirectForCloudflareChallenge(response)).toBe(true);
+    expect(maybeRedirectForCloudflareChallenge(response)).toBe(true);
+    expect(replace).toHaveBeenCalledTimes(1);
+    expect(replace).toHaveBeenCalledWith(window.location.href);
+  });
+
+  it("redirects on html 429 Cloudflare api responses", () => {
+    const replace = vi.fn();
+    cloudflareChallengeTestUtils.setNavigator(replace);
+
+    const response = {
+      status: 429,
+      headers: new Headers({
+        "content-type": "text/html; charset=UTF-8",
+        server: "cloudflare",
+        "cf-ray": "test-ray",
+      }),
+      url: `${window.location.origin}/api/traces/test/flows?limit=2000`,
+    };
+
     expect(maybeRedirectForCloudflareChallenge(response)).toBe(true);
     expect(replace).toHaveBeenCalledTimes(1);
     expect(replace).toHaveBeenCalledWith(window.location.href);
