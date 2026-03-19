@@ -1,3 +1,4 @@
+import { PublicKey } from "@solana/web3.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@bonfida/spl-name-service", () => ({
@@ -8,6 +9,10 @@ vi.mock("@bonfida/spl-name-service", () => ({
 }));
 
 import { getBatchIdentity, getIdentity } from "@/api";
+
+function makeAddress(seed: number): string {
+  return new PublicKey(new Uint8Array(32).fill(seed)).toBase58();
+}
 
 describe("api identity normalization", () => {
   beforeEach(() => {
@@ -98,5 +103,82 @@ describe("api identity normalization", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect([...identities.keys()]).toEqual([address]);
+  });
+
+  it("recovers the first ten unresolved identities even when a larger batch misses them", async () => {
+    const addresses = Array.from({ length: 12 }, (_, index) => makeAddress(index + 1));
+    const recoveredAddresses = new Set(addresses.slice(0, 10));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? "GET") === "POST") {
+        expect(url).toContain("/helius-api/v1/wallet/batch-identity");
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      const address = addresses.find((candidate) => url.includes(`/wallet/${candidate}/identity`));
+      expect(address).toBeDefined();
+      expect(recoveredAddresses.has(address!)).toBe(true);
+      return new Response(
+        JSON.stringify({
+          address,
+          name: `Recovered ${address!.slice(0, 6)}`,
+          category: "Protocol",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const identities = await getBatchIdentity(addresses);
+
+    expect(fetchMock).toHaveBeenCalledTimes(11);
+    expect([...identities.keys()]).toEqual(addresses.slice(0, 10));
+  });
+
+  it("upgrades domain-only batch identities with per-address identity lookups", async () => {
+    const address = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? "GET") === "POST") {
+        expect(url).toContain("/helius-api/v1/wallet/batch-identity");
+        return new Response(
+          JSON.stringify([
+            {
+              address,
+              name: "buy-achipompomhat.sol",
+              category: "AMM",
+              tags: ["buy-achipompomhat.sol"],
+            },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+
+      expect(url).toContain(`/helius-api/v1/wallet/${address}/identity`);
+      return new Response(
+        JSON.stringify({
+          address,
+          name: "Raydium Authority",
+          category: "AMM",
+          domainNames: ["buy-achipompomhat.sol"],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const identities = await getBatchIdentity([address]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(identities.get(address)).toEqual({
+      address,
+      name: "Raydium Authority",
+      label: "buy-achipompomhat.sol",
+      category: "AMM",
+      tags: ["buy-achipompomhat.sol"],
+    });
   });
 });

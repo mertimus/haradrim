@@ -21,6 +21,7 @@ const TTL_TOKEN_META = 60 * 60 * 1000; // 1 hour — token metadata is stable
 const TTL_SNS = 30 * 60 * 1000;       // 30 min
 const TTL_ACCOUNT_TYPE = 60 * 60 * 1000; // 1 hour
 const TTL_OWNER_MINT_TOKEN_ACCOUNTS = 15 * 60 * 1000; // 15 min
+const MAX_BATCH_IDENTITY_RECOVERY = 10;
 
 const RPC_URL = HELIUS_RPC_URL;
 const GTFA_RPC_URL = HELIUS_GTFA_RPC_URL;
@@ -886,6 +887,20 @@ function buildWalletIdentity(
   };
 }
 
+function shouldRecoverBatchIdentity(identity: WalletIdentity | undefined): boolean {
+  if (!identity) return true;
+
+  const normalizedLabel = normalizeSolDomain(identity.label ?? "");
+  const normalizedName = normalizeSolDomain(identity.name ?? "");
+  const hasSolLabel = isSolDomainInput(normalizedLabel);
+  const hasSolName = isSolDomainInput(normalizedName);
+
+  // Batch identity can return only the SNS/domain view for some protocol wallets.
+  // Recover a small capped subset via the per-address endpoint so top holder labels
+  // don't get stuck on low-signal domains.
+  return hasSolLabel && (!identity.name || hasSolName);
+}
+
 async function _getIdentity(
   address: string,
 ): Promise<WalletIdentity | null> {
@@ -1002,11 +1017,13 @@ export async function getBatchIdentity(
   const key = uniqueAddresses.slice().sort().join(",");
   let obj = await cached("batchId", key, TTL_IDENTITY, () => _getBatchIdentity(uniqueAddresses));
 
-  const missingAddresses = uniqueAddresses.filter((address) => !obj[address]);
-  // Cap individual fallback to avoid blocking when batch fails for many addresses
-  if (missingAddresses.length > 0 && missingAddresses.length <= 10) {
+  const recoveryAddresses = uniqueAddresses
+    .filter((address) => shouldRecoverBatchIdentity(obj[address]))
+    .slice(0, MAX_BATCH_IDENTITY_RECOVERY);
+
+  if (recoveryAddresses.length > 0) {
     const recovered = await mapWithConcurrency(
-      missingAddresses,
+      recoveryAddresses,
       MAX_METADATA_FETCH_CONCURRENCY,
       async (address) => [address, await getIdentity(address)] as const,
     );

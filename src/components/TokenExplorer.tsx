@@ -39,16 +39,17 @@ const TABLE_HOLDER_LIMIT = 50;
 
 function enrichHolders(
   holders: TokenHolder[],
-  identityMap: Map<string, { name?: string; category?: string }>,
+  identityMap: Map<string, { name?: string; label?: string; category?: string }>,
   snsMap: Map<string, string>,
 ): TokenHolder[] {
   return holders.map((holder) => {
     const identity = identityMap.get(holder.owner);
     const sns = snsMap.get(holder.owner);
     const enriched = { ...holder };
-    // Identity name always wins. SNS only sets label if nothing exists yet.
-    if (identity?.name) {
-      enriched.label = identity.name;
+    const identityLabel = identity?.name ?? identity?.label;
+    // Identity name wins when present; fall back to identity label before SNS.
+    if (identityLabel) {
+      enriched.label = identityLabel;
     } else if (sns && !holder.label) {
       enriched.label = sns;
     }
