@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Table,
   TableBody,
@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { TokenHolder } from "@/birdeye-api";
+import type { FundingSource } from "@/api";
 import { getHolderTier, TIER_COLORS } from "@/lib/parse-holders";
 
 function truncAddr(addr: string): string {
@@ -26,6 +27,40 @@ function fmtAmount(v: number): string {
 function fmtPct(v: number): string {
   if (v >= 0.01) return `${v.toFixed(2)}%`;
   return "<0.01%";
+}
+
+function CopyIcon({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(address);
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 1200);
+  }, [address]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      title="Copy address"
+      className="inline-flex items-center justify-center flex-shrink-0 cursor-pointer text-muted-foreground/40 hover:text-primary transition-colors"
+      style={{ width: 12, height: 12 }}
+    >
+      {copied ? (
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="3.5 8.5 6.5 11.5 12.5 5.5" />
+        </svg>
+      ) : (
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
+          <path d="M10.5 5.5V3.5A1 1 0 0 0 9.5 2.5H3.5A1 1 0 0 0 2.5 3.5V9.5A1 1 0 0 0 3.5 10.5H5.5" />
+        </svg>
+      )}
+    </button>
+  );
 }
 
 type SortKey = "amount" | "pct";
@@ -60,10 +95,13 @@ function SortIcon({
   );
 }
 
+const EMPTY_FUNDING_MAP = new Map<string, FundingSource>();
+
 interface HolderTableProps {
   holders: TokenHolder[];
   loading: boolean;
   onHoverAddress: (address: string | null) => void;
+  fundingMap?: Map<string, FundingSource>;
   analysisScope?: Set<string> | null;
   highlightedAddresses?: Set<string> | null;
 }
@@ -72,6 +110,7 @@ export function HolderTable({
   holders,
   loading,
   onHoverAddress,
+  fundingMap = EMPTY_FUNDING_MAP,
   analysisScope = null,
   highlightedAddresses = null,
 }: HolderTableProps) {
@@ -190,6 +229,7 @@ export function HolderTable({
                 %
                 <SortIcon col="pct" sortKey={sortKey} sortDir={sortDir} />
               </TableHead>
+              <TableHead className={TH}>Funded by</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -218,12 +258,21 @@ export function HolderTable({
                   </TableCell>
                   <TableCell>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 font-mono text-[10px] text-foreground">
+                      <div className="flex items-center gap-1 font-mono text-[10px] text-foreground">
                         <span
                           className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
                           style={{ backgroundColor: tierColor }}
                         />
-                        {truncAddr(holder.owner)}
+                        <a
+                          href={`https://orb.am/${holder.owner}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="hover:text-primary transition-colors"
+                        >
+                          {truncAddr(holder.owner)}
+                        </a>
+                        <CopyIcon address={holder.owner} />
                       </div>
                       {holder.label && (
                         <div className="ml-3 max-w-[160px] truncate font-mono text-[9px] leading-tight text-primary">
@@ -240,6 +289,26 @@ export function HolderTable({
                     style={{ color: tierColor }}
                   >
                     {fmtPct(holder.percentage)}
+                  </TableCell>
+                  <TableCell className="font-mono text-[9px] text-muted-foreground">
+                    {(() => {
+                      const f = fundingMap.get(holder.owner);
+                      if (!f) return <span className="text-muted-foreground/30">—</span>;
+                      return (
+                        <span className="flex items-center gap-1 max-w-[110px]">
+                          <a
+                            href={`https://orb.am/${f.address}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="truncate hover:text-primary transition-colors"
+                          >
+                            {f.label ?? truncAddr(f.address)}
+                          </a>
+                          <CopyIcon address={f.address} />
+                        </span>
+                      );
+                    })()}
                   </TableCell>
                 </TableRow>
               );

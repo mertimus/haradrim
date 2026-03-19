@@ -14,6 +14,12 @@ const counterpartyExplorerMock = vi.hoisted(() =>
   )),
 );
 
+const tokenExplorerMock = vi.hoisted(() =>
+  vi.fn(({ initialAddress }: { initialAddress?: string }) => (
+    <div data-testid="token-explorer" data-address={initialAddress ?? ""} />
+  )),
+);
+
 vi.mock("@/components/TraceExplorer", () => ({
   TraceExplorer: traceExplorerMock,
 }));
@@ -22,7 +28,12 @@ vi.mock("@/components/CounterpartyExplorer", () => ({
   CounterpartyExplorer: counterpartyExplorerMock,
 }));
 
+vi.mock("@/components/TokenExplorer", () => ({
+  TokenExplorer: tokenExplorerMock,
+}));
+
 const ADDRESS = "8CrRU1NzNpjL3k2BwjW3VixAcX6VFc29KHr4KZg8cs2Y";
+const TOKEN = "So11111111111111111111111111111111111111112";
 
 describe("App trace routing", () => {
   beforeEach(() => {
@@ -71,6 +82,27 @@ describe("App trace routing", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("counterparty-explorer").getAttribute("data-address")).toBe(ADDRESS);
+    });
+  });
+
+  it("renders the token explorer for /tokens", async () => {
+    window.history.pushState({}, "", "/tokens");
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("token-explorer")).toBeTruthy();
+    });
+    expect(screen.getByTestId("token-explorer").getAttribute("data-address")).toBe("");
+  });
+
+  it("passes the token mint from /token/:mint into the explorer", async () => {
+    window.history.pushState({}, "", `/token/${TOKEN}`);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("token-explorer").getAttribute("data-address")).toBe(TOKEN);
     });
   });
 });

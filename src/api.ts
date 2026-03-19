@@ -1312,6 +1312,21 @@ export function getFunding(address: string): Promise<FundingSource | null> {
   return cached("funding", address, TTL_FUNDING, () => _getFunding(address));
 }
 
+export async function getBatchFunding(
+  addresses: string[],
+): Promise<Map<string, FundingSource>> {
+  const map = new Map<string, FundingSource>();
+  if (addresses.length === 0) return map;
+  const results = await mapWithConcurrency(addresses, 8, async (addr) => {
+    const result = await getFunding(addr);
+    return { addr, result };
+  });
+  for (const { addr, result } of results) {
+    if (result) map.set(addr, result);
+  }
+  return map;
+}
+
 async function fetchOwnerTokenAccountsForProgram(
   owner: string,
   mint: string,

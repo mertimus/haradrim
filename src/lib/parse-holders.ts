@@ -55,10 +55,38 @@ export const CLUSTER_COLORS = [
 const DIMMED_COLOR = "#2a3545"; // unconnected holders in connection mode
 const OUT_OF_SCOPE_COLOR = "#18222e";
 
+// ---- Holder shape classification ----
+
+export type HolderShape = "circle" | "triangle" | "square";
+
+const EXCHANGE_KEYWORDS = [
+  "binance", "coinbase", "kraken", "kucoin", "okx", "bybit", "bitfinex",
+  "gemini", "bitstamp", "huobi", "htx", "gate.io", "crypto.com",
+  "bitget", "mexc", "upbit", "bithumb", "robinhood", "jupiter",
+  "raydium", "orca", "whitebit", "lbank", "backpack",
+];
+
+export function getHolderShape(holder: TokenHolder): HolderShape {
+  // Programs → square
+  if (holder.ownerAccountType === "program") return "square";
+
+  // Exchange detection via identity category
+  if (holder.identityCategory?.toLowerCase() === "exchange") return "triangle";
+
+  // Exchange detection via label keywords
+  if (holder.label) {
+    const lower = holder.label.toLowerCase();
+    if (EXCHANGE_KEYWORDS.some((kw) => lower.includes(kw))) return "triangle";
+    if (lower.includes("hot wallet") || lower.includes("cold wallet")) return "triangle";
+  }
+
+  return "circle";
+}
+
 // ---- Bubble sizing ----
 
-const MIN_BUBBLE = 30;
-const MAX_BUBBLE = 200;
+const MIN_BUBBLE = 24;
+const MAX_BUBBLE = 120;
 
 function bubbleSize(pct: number): number {
   if (pct <= 0) return MIN_BUBBLE;
@@ -83,11 +111,6 @@ function logScale(
 }
 
 // ---- Build graph data ----
-const CENTER_NODE_Y = -220;
-const PYRAMID_START_Y = 0;
-const PYRAMID_ROW_GAP = 36;
-const PYRAMID_COL_GAP = 18;
-const PYRAMID_ROW_CAP_GROWTH = 1;
 
 export interface HolderGraphBuildOptions {
   connections?: HolderConnection[];
@@ -101,7 +124,7 @@ export interface HolderGraphBuildOptions {
 
 export function buildHolderGraphData(
   holders: TokenHolder[],
-  overview: TokenOverview | null,
+  _overview: TokenOverview | null,
   options: HolderGraphBuildOptions = {},
 ): { nodes: Node[]; edges: Edge[] } {
   if (holders.length === 0) return { nodes: [], edges: [] };
@@ -113,7 +136,6 @@ export function buildHolderGraphData(
     forensicClusters,
     mode = connections && connections.length > 0 ? "connections" : "tiers",
     analysisScope,
-    holderCountOverride,
   } = options;
   const connectionEdges =
     mode === "forensics" ? forensicEdges : connections;
@@ -132,23 +154,8 @@ export function buildHolderGraphData(
     }
   }
 
-  // Center node
-  const centerSize = 80;
-  const centerNode: Node = {
-    id: "token-center",
-    type: "bubbleNode",
-    position: { x: 0, y: CENTER_NODE_Y },
-    data: {
-      isCenter: true,
-      image: overview?.image ?? "",
-      symbol: overview?.symbol ?? "",
-      holderCount: holderCountOverride ?? overview?.holder ?? holders.length,
-      nodeSize: centerSize,
-    },
-  };
-
   const sizes = holders.map((holder) => bubbleSize(holder.percentage));
-  const positions = buildPyramidPositions(sizes);
+  const positions = buildConcentrationPositions(sizes);
 
   const holderNodes: Node[] = holders.map((holder, i) => {
     const tier = getHolderTier(holder.percentage);
@@ -174,7 +181,6 @@ export function buildHolderGraphData(
       type: "bubbleNode",
       position: positions[i],
       data: {
-        isCenter: false,
         address: holder.owner,
         label: holder.label,
         percentage: holder.percentage,
@@ -182,6 +188,7 @@ export function buildHolderGraphData(
         tier,
         color,
         nodeSize: size,
+        holderShape: getHolderShape(holder),
         inCluster,
         outOfScope,
         suppressTierPulse: mode === "forensics",
@@ -231,45 +238,63 @@ export function buildHolderGraphData(
     }
   }
 
-  return { nodes: [centerNode, ...holderNodes], edges };
+  return { nodes: holderNodes, edges };
 }
 
-function rowCapacityFor(index: number): number {
-  return Math.max(1, index + PYRAMID_ROW_CAP_GROWTH);
-}
+// Golden angle in radians — prevents visual banding between rings
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const RING_PAD = 4; // px gap between rings
 
-function buildPyramidPositions(sizes: number[]): Array<{ x: number; y: number }> {
-  const rows: number[][] = [];
-  let cursor = 0;
-  let rowIndex = 0;
-
-  while (cursor < sizes.length) {
-    const capacity = rowCapacityFor(rowIndex);
-    rows.push(sizes.slice(cursor, cursor + capacity));
-    cursor += capacity;
-    rowIndex += 1;
-  }
+function buildConcentrationPositions(
+  sizes: number[],
+): Array<{ x: number; y: number }> {
+  if (sizes.length === 0) return [];
 
   const positions: Array<{ x: number; y: number }> = new Array(sizes.length);
-  let runningIndex = 0;
-  let currentY = PYRAMID_START_Y;
 
-  for (const row of rows) {
-    const rowWidth = row.reduce((sum, size) => sum + size, 0)
-      + Math.max(0, row.length - 1) * PYRAMID_COL_GAP;
-    let currentX = -rowWidth / 2;
-    const rowMaxSize = Math.max(...row);
+  // Largest holder at origin
+  positions[0] = { x: 0, y: 0 };
+  if (sizes.length === 1) return positions;
 
-    for (const size of row) {
-      positions[runningIndex] = {
-        x: currentX + size / 2,
-        y: currentY,
+  // Define concentric rings: [startIndex, endIndex) per ring
+  const ringBounds: Array<[number, number]> = [];
+  let cursor = 1;
+  let ringCapacity = 5;
+  while (cursor < sizes.length) {
+    const end = Math.min(cursor + ringCapacity, sizes.length);
+    ringBounds.push([cursor, end]);
+    cursor = end;
+    ringCapacity = Math.ceil(ringCapacity * 1.6);
+  }
+
+  // Build rings with tight radii based on actual node sizes
+  let prevOuterEdge = sizes[0] / 2; // half the center node
+
+  for (let r = 0; r < ringBounds.length; r++) {
+    const [start, end] = ringBounds[r];
+    const count = end - start;
+    const maxNodeInRing = Math.max(...sizes.slice(start, end));
+
+    // Radius = previous outer edge + gap + half the biggest node in this ring
+    // But also ensure nodes in the ring don't overlap each other
+    // Min circumference needed = sum of diameters + small gaps
+    const circumferenceNeeded = sizes.slice(start, end).reduce((s, sz) => s + sz, 0) + count * 6;
+    const radiusFromCircumference = circumferenceNeeded / (2 * Math.PI);
+    const radiusFromPacking = prevOuterEdge + RING_PAD + maxNodeInRing / 2;
+    const radius = Math.max(radiusFromPacking, radiusFromCircumference);
+
+    const angleOffset = r * GOLDEN_ANGLE;
+
+    for (let i = 0; i < count; i++) {
+      const angle = angleOffset + (i / count) * 2 * Math.PI;
+      const jitterR = radius * (1 + (((i * 7 + r * 13) % 17) / 17 - 0.5) * 0.06);
+      positions[start + i] = {
+        x: Math.cos(angle) * jitterR,
+        y: Math.sin(angle) * jitterR,
       };
-      currentX += size + PYRAMID_COL_GAP;
-      runningIndex += 1;
     }
 
-    currentY += rowMaxSize + PYRAMID_ROW_GAP;
+    prevOuterEdge = radius + maxNodeInRing / 2;
   }
 
   return positions;

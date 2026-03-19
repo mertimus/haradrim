@@ -76,33 +76,32 @@ describe("HolderGraph", () => {
         loading={false}
         nodes={[
           {
-            id: "token-center",
+            id: "wallet-a",
             type: "bubbleNode",
             position: { x: 0, y: 0 },
             data: {
-              isCenter: true,
-              symbol: "TEST",
-              holderCount: 2,
-              nodeSize: 80,
-            },
-          },
-          {
-            id: "wallet-a",
-            type: "bubbleNode",
-            position: { x: 120, y: 0 },
-            data: {
-              isCenter: false,
               address: "wallet-a",
               percentage: 12.5,
               nodeSize: 64,
               color: "#00d4ff",
             },
           },
+          {
+            id: "wallet-b",
+            type: "bubbleNode",
+            position: { x: 120, y: 0 },
+            data: {
+              address: "wallet-b",
+              percentage: 5.0,
+              nodeSize: 50,
+              color: "#ffb800",
+            },
+          },
         ]}
       />,
     );
 
-    expect(screen.getByText("TEST")).toBeTruthy();
-    expect(screen.getByText("2 holders")).toBeTruthy();
+    expect(screen.getByText("12.5%")).toBeTruthy();
+    expect(screen.getByText("5.0%")).toBeTruthy();
   });
 });

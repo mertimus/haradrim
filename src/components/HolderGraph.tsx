@@ -1,15 +1,16 @@
-import { useCallback, useState, useEffect, useMemo, memo } from "react";
+import { useCallback, useState, useEffect, useMemo, useRef, memo } from "react";
 import {
   ReactFlow,
   type Node,
   type Edge,
   type NodeProps,
+  type NodeChange,
+  applyNodeChanges,
   Handle,
   Position,
   Background,
   BackgroundVariant,
   Controls,
-  useNodesState,
   useEdgesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -18,6 +19,7 @@ import {
   TIER_COLORS,
   TIER_LABELS,
   type HolderTier,
+  type HolderShape,
 } from "@/lib/parse-holders";
 import { ConnectionEdge } from "@/components/ConnectionEdge";
 import { EvidenceEdge } from "@/components/EvidenceEdge";
@@ -46,10 +48,6 @@ function hexToRgb(hex: string): string {
 // ---- Bubble Node ----
 
 interface BubbleNodeData {
-  isCenter: boolean;
-  image?: string;
-  symbol?: string;
-  holderCount?: number;
   address?: string;
   label?: string;
   percentage?: number;
@@ -57,95 +55,58 @@ interface BubbleNodeData {
   tier?: HolderTier;
   color?: string;
   nodeSize: number;
+  holderShape?: HolderShape;
   inCluster?: boolean;
   outOfScope?: boolean;
   suppressTierPulse?: boolean;
   [key: string]: unknown;
 }
 
+const SHAPE_BADGE: Record<string, { icon: string; title: string } | null> = {
+  circle: null,
+  triangle: { icon: "E", title: "Exchange" },
+  square: { icon: "P", title: "Program" },
+};
+
 const BubbleNode = memo(function BubbleNode({
   data,
 }: NodeProps<Node<BubbleNodeData>>) {
   const d = data as BubbleNodeData;
   const size = d.nodeSize;
-
-  if (d.isCenter) {
-    const rgb = "0, 212, 255";
-    return (
-      <div
-        className="center-node-pulse relative flex flex-col items-center justify-center"
-        style={{
-          width: size,
-          height: size,
-          borderRadius: "50%",
-          border: "2px solid #00d4ff",
-          outline: `2px solid rgba(${rgb}, 0.3)`,
-          outlineOffset: 2,
-          backgroundColor: `rgba(${rgb}, 0.1)`,
-        }}
-      >
-        {d.image && (
-          <img
-            src={d.image}
-            alt=""
-            draggable={false}
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: "50%",
-              objectFit: "cover",
-              marginBottom: 2,
-            }}
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.display = "none";
-            }}
-          />
-        )}
-        {d.symbol && (
-          <div
-            className="font-mono text-[11px] font-bold"
-            style={{ color: "#00d4ff" }}
-          >
-            {d.symbol}
-          </div>
-        )}
-        <div
-          className="font-mono text-[9px]"
-          style={{ color: "#6b7b8d" }}
-        >
-          {(d.holderCount ?? 0).toLocaleString()} holders
-        </div>
-      </div>
-    );
-  }
-
-  // Holder bubble
   const color = d.color ?? "#6b7b8d";
   const rgb = hexToRgb(color);
   const pct = d.percentage ?? 0;
+  const shape = d.holderShape ?? "circle";
   const pctStr =
     pct >= 1
       ? `${pct.toFixed(1)}%`
       : pct >= 0.01
         ? `${pct.toFixed(2)}%`
         : "<0.01%";
-  // Whale pulse only in tier mode, not in cluster mode
   const isWhale = d.tier === "whale" && !d.inCluster && !d.outOfScope && !d.suppressTierPulse;
   const cssVars = { "--ring-rgb": rgb } as React.CSSProperties;
+  const bgAlpha = d.outOfScope ? 0.04 : d.inCluster ? 0.15 : 0.08;
+  const isExchange = shape === "triangle";
+  const isProgram = shape === "square";
+  const badge = SHAPE_BADGE[shape];
+
+  // Exchange: double ring (outer glow ring). Program: dashed border.
+  const borderStyle = d.outOfScope ? "dashed" : isProgram ? "dashed" : "solid";
 
   return (
     <div
-      className={`node-shape flex flex-col items-center justify-center ${isWhale ? "whale-pulse" : ""}`}
+      className={`node-shape relative flex flex-col items-center justify-center ${isWhale ? "whale-pulse" : ""}`}
       data-tier={isWhale ? "1" : "2"}
       style={{
         ...cssVars,
         width: size,
         height: size,
         borderRadius: "50%",
-        border: `1.5px solid ${color}`,
-        borderStyle: d.outOfScope ? "dashed" : "solid",
-        backgroundColor: `rgba(${rgb}, ${d.outOfScope ? 0.04 : d.inCluster ? 0.15 : 0.08})`,
-        overflow: "hidden",
+        border: `1.5px ${borderStyle} ${color}`,
+        outline: isExchange ? `2px solid rgba(${rgb}, 0.3)` : "none",
+        outlineOffset: isExchange ? 2 : 0,
+        backgroundColor: `rgba(${rgb}, ${bgAlpha})`,
+        overflow: "visible",
         padding: 4,
         opacity: d.outOfScope ? 0.6 : 1,
       }}
@@ -176,6 +137,31 @@ const BubbleNode = memo(function BubbleNode({
           {truncAddr(d.address)}
         </div>
       )}
+      {badge && size >= 40 && (
+        <div
+          title={badge.title}
+          style={{
+            position: "absolute",
+            top: -2,
+            right: -2,
+            width: 14,
+            height: 14,
+            borderRadius: "50%",
+            backgroundColor: "#0d1321",
+            border: `1px solid ${color}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 7,
+            fontFamily: "var(--font-mono)",
+            fontWeight: 700,
+            color,
+            lineHeight: 1,
+          }}
+        >
+          {badge.icon}
+        </div>
+      )}
       <Handle type="source" position={Position.Right} isConnectable={false} style={{ opacity: 0, pointerEvents: "none" }} />
       <Handle type="target" position={Position.Left} isConnectable={false} style={{ opacity: 0, pointerEvents: "none" }} />
     </div>
@@ -192,7 +178,7 @@ const edgeTypes = {
   evidenceEdge: EvidenceEdge,
   fundingEdge: FundingEdge,
 };
-const FIT_VIEW_OPTIONS = { padding: 0.15, maxZoom: 1.2 } as const;
+const FIT_VIEW_OPTIONS = { padding: 0.08, maxZoom: 1.8 } as const;
 const PRO_OPTIONS = { hideAttribution: true } as const;
 
 // ---- Context menu ----
@@ -251,19 +237,97 @@ export function HolderGraph({
   selectedForensicsClusterId = null,
   onSelectForensicsCluster,
 }: HolderGraphProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState(propNodes);
+  const [nodes, setNodes] = useState(propNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(propEdges);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [highlightedCluster, setHighlightedCluster] = useState<number | null>(null);
   const [highlightedFunder, setHighlightedFunder] = useState<string | null>(null);
+  const draggingRef = useRef<string | null>(null);
 
   useEffect(() => {
     setNodes(propNodes);
-  }, [propNodes, setNodes]);
+  }, [propNodes]);
 
   useEffect(() => {
     setEdges(propEdges);
   }, [propEdges, setEdges]);
+
+  // Collision-aware node change handler
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      // Track which node is being dragged
+      for (const c of changes) {
+        if (c.type === "position" && c.dragging !== undefined) {
+          draggingRef.current = c.dragging ? c.id : null;
+        }
+      }
+
+      setNodes((prev) => {
+        const next = applyNodeChanges(changes, prev);
+        const dragId = draggingRef.current;
+        if (!dragId) return next;
+
+        // Resolve collisions: push overlapping nodes away from the dragged node
+        const dragIdx = next.findIndex((n) => n.id === dragId);
+        if (dragIdx < 0) return next;
+
+        const result = next.map((n) => ({ ...n, position: { ...n.position } }));
+        const drag = result[dragIdx];
+        const dragR = ((drag.data as BubbleNodeData).nodeSize ?? 40) / 2;
+
+        // Run a few iterations to cascade pushes
+        for (let iter = 0; iter < 3; iter++) {
+          for (let i = 0; i < result.length; i++) {
+            if (i === dragIdx) continue;
+            const other = result[i];
+            const otherR = ((other.data as BubbleNodeData).nodeSize ?? 40) / 2;
+            const minDist = dragR + otherR + 2;
+
+            const dx = other.position.x - drag.position.x;
+            const dy = other.position.y - drag.position.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+            if (dist < minDist) {
+              const push = (minDist - dist);
+              const nx = dx / dist;
+              const ny = dy / dist;
+              other.position.x += nx * push;
+              other.position.y += ny * push;
+            }
+          }
+
+          // Also resolve other-to-other overlaps caused by the push
+          for (let i = 0; i < result.length; i++) {
+            for (let j = i + 1; j < result.length; j++) {
+              if (i === dragIdx || j === dragIdx) continue;
+              const a = result[i];
+              const b = result[j];
+              const aR = ((a.data as BubbleNodeData).nodeSize ?? 40) / 2;
+              const bR = ((b.data as BubbleNodeData).nodeSize ?? 40) / 2;
+              const minD = aR + bR + 2;
+
+              const dx = b.position.x - a.position.x;
+              const dy = b.position.y - a.position.y;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+              if (dist < minD) {
+                const push = (minD - dist) / 2;
+                const nx = dx / dist;
+                const ny = dy / dist;
+                a.position.x -= nx * push;
+                a.position.y -= ny * push;
+                b.position.x += nx * push;
+                b.position.y += ny * push;
+              }
+            }
+          }
+        }
+
+        return result;
+      });
+    },
+    [setNodes],
+  );
 
   useEffect(() => {
     setHighlightedCluster(selectedForensicsClusterId);
@@ -272,7 +336,7 @@ export function HolderGraph({
   const handleNodeClick = useCallback(
     (event: React.MouseEvent, node: Node) => {
       const d = node.data as BubbleNodeData;
-      if (d.isCenter || !d.address) return;
+      if (!d.address) return;
       setContextMenu({
         address: d.address,
         screenX: event.clientX,
@@ -460,6 +524,7 @@ export function HolderGraph({
         <Controls
           className="!border-border !bg-card [&>button]:!border-border [&>button]:!bg-card [&>button]:!text-foreground [&>button:hover]:!bg-muted"
           position="bottom-right"
+          showInteractive={false}
         />
       </ReactFlow>
 
@@ -974,6 +1039,15 @@ export function HolderGraph({
               </span>
             </div>
           ))}
+          <div style={{ width: 1, height: 12, backgroundColor: "#1e2a3a", alignSelf: "center" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", border: "1px solid #6b7b8d", outline: "1.5px solid rgba(107,123,141,0.3)", outlineOffset: 1 }} />
+            <span style={{ marginLeft: 2 }}>Exchange</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", border: "1px dashed #6b7b8d" }} />
+            <span>Program</span>
+          </div>
         </div>
       )}
 
@@ -1040,7 +1114,7 @@ export function HolderGraph({
           <button
             onClick={() => {
               window.open(
-                `https://solscan.io/account/${contextMenu.address}`,
+                `https://orb.am/${contextMenu.address}`,
                 "_blank",
               );
               setContextMenu(null);
@@ -1067,7 +1141,7 @@ export function HolderGraph({
               (e.currentTarget as HTMLButtonElement).style.background = "none";
             }}
           >
-            View on Solscan
+            View on Orb
           </button>
         </div>
       )}

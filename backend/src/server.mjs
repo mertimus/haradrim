@@ -87,6 +87,8 @@ const ALLOWED_BIRDEYE_PATHS = new Map([
   ["/birdeye-api/defi/token_trending", new Set(["GET"])],
   ["/birdeye-api/defi/token_overview", new Set(["GET"])],
   ["/birdeye-api/defi/v3/token/holder", new Set(["GET"])],
+  ["/birdeye-api/defi/v3/search", new Set(["GET"])],
+  ["/birdeye-api/defi/token_list", new Set(["GET"])],
 ]);
 const traceEnrichmentByKey = new Map();
 const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;

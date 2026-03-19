@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
-import { getTokenOverview } from "@/birdeye-api";
-import type { TokenOverview, TokenHolder } from "@/birdeye-api";
-import { getBatchIdentity, getBatchSolDomains } from "@/api";
+import { getTokenOverview, getTrendingTokens, searchTokens } from "@/birdeye-api";
+import type { TokenOverview, TokenHolder, TrendingToken, TokenSearchResult } from "@/birdeye-api";
+import { getBatchIdentity, getBatchSolDomains, getBatchFunding } from "@/api";
+import type { FundingSource } from "@/api";
 import {
-  getTokenForensics,
   getTokenHolderSnapshot,
   type TokenForensicsReport,
 } from "@/lib/backend-api";
@@ -13,8 +13,20 @@ import { HolderGraph } from "@/components/HolderGraph";
 import { HolderTable } from "@/components/HolderTable";
 import { TokenForensicsPanel } from "@/components/TokenForensicsPanel";
 
+interface TokenExplorerProps {
+  initialAddress?: string;
+  onRouteAddressChange?: (address: string) => void;
+}
+
 function truncAddr(addr: string): string {
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
+}
+
+function fmtUsd(value: number): string {
+  if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(1)}B`;
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+  return `$${value.toFixed(0)}`;
 }
 
 function getTokenFromUrl(): string {
@@ -22,24 +34,28 @@ function getTokenFromUrl(): string {
   return match?.[1] ?? "";
 }
 
-const GRAPH_TOP_N = 100;
-const TABLE_HOLDER_LIMIT = 5000;
-const FORENSICS_SCOPE_LIMIT = 10;
+const GRAPH_TOP_N = 33;
+const TABLE_HOLDER_LIMIT = 50;
 
 function enrichHolders(
   holders: TokenHolder[],
-  identityMap: Map<string, { name?: string }>,
+  identityMap: Map<string, { name?: string; category?: string }>,
   snsMap: Map<string, string>,
 ): TokenHolder[] {
   return holders.map((holder) => {
     const identity = identityMap.get(holder.owner);
     const sns = snsMap.get(holder.owner);
     const label = identity?.name ?? sns ?? holder.label;
-    return label ? { ...holder, label } : holder;
+    const enriched = label ? { ...holder, label } : { ...holder };
+    if (identity?.category) enriched.identityCategory = identity.category;
+    return enriched;
   });
 }
 
-export function TokenExplorer() {
+export function TokenExplorer({
+  initialAddress = "",
+  onRouteAddressChange,
+}: TokenExplorerProps) {
   const [tokenAddress, setTokenAddress] = useState("");
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
@@ -49,14 +65,18 @@ export function TokenExplorer() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [layoutKey, setLayoutKey] = useState(0);
-  const [snapshotWarnings, setSnapshotWarnings] = useState<string[]>([]);
   const [showForensics, setShowForensics] = useState(false);
   const [forensicsLoading, setForensicsLoading] = useState(false);
   const [forensicsError, setForensicsError] = useState<string | null>(null);
   const [forensicsResult, setForensicsResult] = useState<TokenForensicsReport | null>(null);
+  const [fundingMap, setFundingMap] = useState<Map<string, FundingSource>>(new Map());
   const [selectedForensicsClusterId, setSelectedForensicsClusterId] = useState<number | null>(null);
+  const [trendingTokens, setTrendingTokens] = useState<TrendingToken[]>([]);
+  const [trendingLoading, setTrendingLoading] = useState(false);
+  const [searchResults, setSearchResults] = useState<TokenSearchResult[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const analyzeRequestIdRef = useRef(0);
-  const forensicsRequestIdRef = useRef(0);
   const graphWrapperRef = useRef<HTMLDivElement>(null);
 
   const graphHolders = useMemo(
@@ -108,13 +128,14 @@ export function TokenExplorer() {
     setNodes([]);
     setEdges([]);
     setLayoutKey(0);
-    setSnapshotWarnings([]);
     setShowForensics(false);
     setForensicsLoading(false);
     setForensicsError(null);
     setForensicsResult(null);
     setSelectedForensicsClusterId(null);
-  }, []);
+    setFundingMap(new Map());
+    onRouteAddressChange?.("");
+  }, [onRouteAddressChange]);
 
   const analyzeToken = useCallback(async (address: string) => {
     const trimmed = address.trim();
@@ -129,44 +150,65 @@ export function TokenExplorer() {
     setHolders([]);
     setNodes([]);
     setEdges([]);
-    setSnapshotWarnings([]);
     setShowForensics(false);
     setForensicsLoading(false);
     setForensicsError(null);
     setForensicsResult(null);
     setSelectedForensicsClusterId(null);
-    forensicsRequestIdRef.current += 1;
+    setFundingMap(new Map());
     window.history.pushState({}, "", `/token/${trimmed}`);
+    onRouteAddressChange?.(trimmed);
 
     try {
-      const [overviewResult, snapshotResult] = await Promise.allSettled([
-        getTokenOverview(trimmed),
-        getTokenHolderSnapshot(trimmed, { limit: TABLE_HOLDER_LIMIT }),
-      ]);
+      // Phase 1: fire overview and snapshot in parallel.
+      // Overview is fast (~200ms) — render it as soon as it arrives
+      // so the header bar populates while holders are still loading.
+      const overviewPromise = getTokenOverview(trimmed);
+      const snapshotPromise = getTokenHolderSnapshot(trimmed, { limit: TABLE_HOLDER_LIMIT });
+
+      overviewPromise.then((result) => {
+        if (requestId !== analyzeRequestIdRef.current) return;
+        setOverview(result);
+      }).catch(() => {});
+
+      const snapshotResult = await snapshotPromise;
       if (requestId !== analyzeRequestIdRef.current) return;
 
-      const nextOverview =
-        overviewResult.status === "fulfilled" ? overviewResult.value : null;
-      const baseHolders =
-        snapshotResult.status === "fulfilled" ? snapshotResult.value.holders : [];
-
-      if (snapshotResult.status === "rejected") {
-        throw snapshotResult.reason instanceof Error
-          ? snapshotResult.reason
-          : new Error("Unable to load token holders.");
+      const baseHolders = snapshotResult.holders;
+      if (baseHolders.length === 0) {
+        const resolvedOverview = await overviewPromise.catch(() => null);
+        if (requestId !== analyzeRequestIdRef.current) return;
+        if ((resolvedOverview?.holder ?? 0) > 0) {
+          throw new Error("Token holder fetch returned no data for a token with holders.");
+        }
+        if (!resolvedOverview) {
+          throw new Error("Unable to load token data. Check that the backend is running and the mint address is valid.");
+        }
       }
 
-      const ownerAddresses = baseHolders.map((holder) => holder.owner);
-      let enrichedHolders = baseHolders;
+      // Phase 2: render holders immediately with whatever labels
+      // the backend already provided (program labels, account types).
+      // Graph + table become interactive while identity enrichment runs.
+      setHolders(baseHolders);
+      setLoading(false);
 
-      if (ownerAddresses.length > 0) {
+      // Ensure overview is resolved before moving on.
+      const resolvedOverview = await overviewPromise.catch(() => null);
+      if (requestId !== analyzeRequestIdRef.current) return;
+      if (resolvedOverview) setOverview(resolvedOverview);
+
+      // Phase 3: enrich labels + funding in the background — graph and table
+      // re-render seamlessly when data arrives.
+      if (baseHolders.length > 0) {
+        const ownerAddresses = baseHolders.map((holder) => holder.owner);
         const snsCandidateAddresses = baseHolders
           .slice(0, GRAPH_TOP_N)
           .map((holder) => holder.owner);
 
-        const [identityResult, snsResult] = await Promise.allSettled([
+        const [identityResult, snsResult, fundingResult] = await Promise.allSettled([
           getBatchIdentity(ownerAddresses),
           getBatchSolDomains(snsCandidateAddresses),
+          getBatchFunding(ownerAddresses),
         ]);
         if (requestId !== analyzeRequestIdRef.current) return;
 
@@ -179,95 +221,56 @@ export function TokenExplorer() {
             ? snsResult.value
             : new Map<string, string>();
 
-        enrichedHolders = enrichHolders(baseHolders, identityMap, snsMap);
-      }
+        setHolders(enrichHolders(baseHolders, identityMap, snsMap));
 
-      if (requestId !== analyzeRequestIdRef.current) return;
-      if (!nextOverview && baseHolders.length === 0) {
-        throw new Error("Unable to load token data. Check that the backend is running and the mint address is valid.");
+        if (fundingResult.status === "fulfilled") {
+          setFundingMap(fundingResult.value);
+        }
       }
-      if ((nextOverview?.holder ?? 0) > 0 && baseHolders.length === 0) {
-        throw new Error("Token holder fetch returned no data for a token with holders.");
-      }
-
-      setOverview(nextOverview);
-      setHolders(enrichedHolders);
-      setSnapshotWarnings([
-        [
-          "Holder snapshot built from Helius getTokenLargestAccountsV2",
-          snapshotResult.value.ownerLimit
-            ? `top ${snapshotResult.value.ownerLimit.toLocaleString()} owners`
-            : "loaded owners",
-          snapshotResult.value.accountLimit
-            ? `from top ${snapshotResult.value.accountLimit.toLocaleString()} token accounts`
-            : null,
-          `at ${new Date(snapshotResult.value.snapshotAt).toLocaleTimeString()}.`,
-        ]
-          .filter(Boolean)
-          .join(" "),
-        ...(snapshotResult.value.partial
-          ? ["Snapshot is a significant-holder slice, not the full holder universe."]
-          : []),
-      ]);
     } catch (error) {
       if (requestId !== analyzeRequestIdRef.current) return;
       setOverview(null);
       setHolders([]);
       setNodes([]);
       setEdges([]);
+      setLoading(false);
       setError(
         error instanceof Error
           ? error.message
           : "Unable to load token data.",
       );
-    } finally {
-      if (requestId === analyzeRequestIdRef.current) {
-        setLoading(false);
-      }
     }
-  }, []);
-
-  const handleToggleForensics = useCallback(async () => {
-    if (!tokenAddress || holders.length === 0) return;
-
-    if (showForensics) {
-      setShowForensics(false);
-      return;
-    }
-
-    setForensicsError(null);
-    setShowForensics(true);
-    if (forensicsResult?.mint === tokenAddress) return;
-
-    const requestId = ++forensicsRequestIdRef.current;
-    setForensicsLoading(true);
-
-    try {
-      const result = await getTokenForensics(tokenAddress, {
-        scopeLimit: FORENSICS_SCOPE_LIMIT,
-        maxDepth: 2,
-        candidateLimit: 3,
-      });
-      if (requestId !== forensicsRequestIdRef.current) return;
-      setForensicsResult(result);
-      setSelectedForensicsClusterId(result.clusters[0]?.id ?? null);
-    } catch (error) {
-      if (requestId !== forensicsRequestIdRef.current) return;
-      setForensicsError(
-        error instanceof Error ? error.message : "Unable to load forensic clusters.",
-      );
-      setShowForensics(false);
-    } finally {
-      if (requestId === forensicsRequestIdRef.current) {
-        setForensicsLoading(false);
-      }
-    }
-  }, [forensicsResult?.mint, holders.length, showForensics, tokenAddress]);
+  }, [onRouteAddressChange]);
 
   const handleSubmit = useCallback((event: React.FormEvent) => {
     event.preventDefault();
+    setShowSuggestions(false);
     void analyzeToken(inputValue);
   }, [analyzeToken, inputValue]);
+
+  const handleInputChange = useCallback((value: string) => {
+    setInputValue(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    if (value.trim().length < 3) {
+      setSearchResults([]);
+      setShowSuggestions(false);
+      return;
+    }
+    searchTimerRef.current = setTimeout(() => {
+      searchTokens(value.trim()).then((results) => {
+        setSearchResults(results);
+        setShowSuggestions(results.length > 0);
+      }).catch(() => {});
+    }, 300);
+  }, []);
+
+  useEffect(() => () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current); }, []);
+
+  const handleSelectSuggestion = useCallback((address: string) => {
+    setShowSuggestions(false);
+    setSearchResults([]);
+    void analyzeToken(address);
+  }, [analyzeToken]);
 
   const handleBack = useCallback(() => {
     resetState();
@@ -275,11 +278,11 @@ export function TokenExplorer() {
   }, [resetState]);
 
   useEffect(() => {
-    const token = getTokenFromUrl();
+    const token = getTokenFromUrl() || initialAddress.trim();
     if (token) {
       void analyzeToken(token);
     }
-  }, [analyzeToken]);
+  }, [analyzeToken, initialAddress]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -294,6 +297,14 @@ export function TokenExplorer() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [analyzeToken, resetState]);
+
+  useEffect(() => {
+    setTrendingLoading(true);
+    getTrendingTokens()
+      .then(setTrendingTokens)
+      .catch(() => {})
+      .finally(() => setTrendingLoading(false));
+  }, []);
 
   const handleHoverAddress = useCallback((address: string | null) => {
     const container = graphWrapperRef.current;
@@ -310,12 +321,16 @@ export function TokenExplorer() {
   }, []);
 
   const warningLines = useMemo(() => {
-    const lines = [...snapshotWarnings];
-    if (showForensics && forensicsResult) {
-      lines.push(...forensicsResult.warnings);
-    }
-    return [...new Set(lines)];
-  }, [forensicsResult, showForensics, snapshotWarnings]);
+    if (!showForensics || !forensicsResult) return [];
+    return [...new Set(forensicsResult.warnings)];
+  }, [forensicsResult, showForensics]);
+
+  const concentrationStats = useMemo(() => {
+    if (holders.length === 0) return null;
+    const top5 = holders.slice(0, 5).reduce((s, h) => s + h.percentage, 0);
+    const top10 = holders.slice(0, 10).reduce((s, h) => s + h.percentage, 0);
+    return { top5, top10 };
+  }, [holders]);
 
   if (!tokenAddress) {
     return (
@@ -334,8 +349,11 @@ export function TokenExplorer() {
             <input
               type="text"
               value={inputValue}
-              onChange={(event) => setInputValue(event.target.value)}
-              placeholder="Paste token address..."
+              onChange={(event) => handleInputChange(event.target.value)}
+              onFocus={() => { if (searchResults.length > 0) setShowSuggestions(true); }}
+              onBlur={() => { setTimeout(() => setShowSuggestions(false), 150); }}
+              placeholder="Search by name or paste address..."
+              autoComplete="off"
               className="w-full rounded border border-border bg-card px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none"
             />
             <button
@@ -344,8 +362,95 @@ export function TokenExplorer() {
             >
               Load
             </button>
+            {showSuggestions && searchResults.length > 0 && (
+              <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded border border-border bg-card shadow-lg overflow-hidden">
+                {searchResults.map((t) => (
+                  <button
+                    key={t.address}
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => handleSelectSuggestion(t.address)}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-muted cursor-pointer"
+                  >
+                    {t.logoURI ? (
+                      <img
+                        src={t.logoURI}
+                        alt=""
+                        className="h-5 w-5 flex-shrink-0 rounded-full object-cover"
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                      />
+                    ) : (
+                      <div className="h-5 w-5 flex-shrink-0 rounded-full bg-muted" />
+                    )}
+                    <span className="font-mono text-[11px] font-bold text-foreground">
+                      {t.symbol}
+                    </span>
+                    <span className="truncate font-mono text-[10px] text-muted-foreground">
+                      {t.name}
+                    </span>
+                    <span className="ml-auto flex items-center gap-2 flex-shrink-0">
+                      {t.price > 0 && (
+                        <span className="font-mono text-[9px] text-foreground">
+                          {t.price >= 0.01 ? `$${t.price.toFixed(2)}` : `$${t.price.toExponential(1)}`}
+                        </span>
+                      )}
+                      {t.marketCap > 0 && (
+                        <span className="font-mono text-[9px] text-muted-foreground/50">
+                          {fmtUsd(t.marketCap)}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </form>
+
+        {trendingLoading && trendingTokens.length === 0 && (
+          <p className="font-mono text-[10px] text-muted-foreground/50 animate-pulse">
+            Loading trending tokens...
+          </p>
+        )}
+
+        {trendingTokens.length > 0 && (
+          <div className="w-full max-w-2xl">
+            <p className="mb-2 text-center font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground/60">
+              Trending on Solana
+            </p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {trendingTokens.map((t) => (
+                <button
+                  key={t.address}
+                  onClick={() => void analyzeToken(t.address)}
+                  className="flex flex-col items-center gap-1 rounded border border-border bg-card/60 px-2 py-2 transition-colors hover:border-primary/30 hover:bg-card cursor-pointer"
+                >
+                  {t.logoURI ? (
+                    <img
+                      src={t.logoURI}
+                      alt=""
+                      className="h-6 w-6 rounded-full object-cover"
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                    />
+                  ) : (
+                    <div className="h-6 w-6 rounded-full bg-muted" />
+                  )}
+                  <span className="font-mono text-[10px] font-bold text-foreground truncate max-w-full">
+                    {t.symbol}
+                  </span>
+                  <span className="font-mono text-[8px] text-muted-foreground truncate max-w-full">
+                    {t.name}
+                  </span>
+                  {t.volume24hUSD > 0 && (
+                    <span className="font-mono text-[8px] text-primary/60">
+                      {fmtUsd(t.volume24hUSD)} 24h
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -380,35 +485,52 @@ export function TokenExplorer() {
             </span>
           )}
         </div>
-        <div className="h-3 w-px bg-border" />
-        <span className="font-mono text-[10px] text-muted-foreground">
-          {holders.length.toLocaleString()} holders
-        </span>
-        <div className="h-3 w-px bg-border" />
-        <span className="font-mono text-[10px] text-muted-foreground">
-          Graph: top {Math.min(graphHolders.length, GRAPH_TOP_N)}
-        </span>
-        <button
-          onClick={() => void handleToggleForensics()}
-          disabled={loading || forensicsLoading || holders.length === 0}
-          className={`rounded border px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider transition-colors ${
-            showForensics
-              ? "border-primary/40 bg-primary/10 text-primary"
-              : "border-border text-muted-foreground hover:text-primary"
-          } ${loading || forensicsLoading || holders.length === 0 ? "opacity-50" : ""}`}
-        >
-          {forensicsLoading ? "Analyzing..." : "Forensics"}
-        </button>
-        {showForensics && forensicsResult && (
+        {overview && (
           <>
             <div className="h-3 w-px bg-border" />
-            <span className="font-mono text-[10px] text-muted-foreground">
-              Analyzed: top {forensicsResult.scopeLimit}
+            <span className="font-mono text-[10px] text-foreground">
+              {overview.price >= 0.01
+                ? `$${overview.price.toFixed(2)}`
+                : overview.price >= 0.0001
+                  ? `$${overview.price.toFixed(6)}`
+                  : `$${overview.price.toExponential(2)}`}
             </span>
+            {overview.priceChange1h !== 0 && (
+              <span
+                className="font-mono text-[9px]"
+                style={{ color: overview.priceChange1h >= 0 ? "#22c55e" : "#ef4444" }}
+              >
+                {overview.priceChange1h >= 0 ? "+" : ""}
+                {overview.priceChange1h.toFixed(1)}% 1h
+              </span>
+            )}
+            {overview.priceChange24h !== 0 && (
+              <span
+                className="font-mono text-[9px]"
+                style={{ color: overview.priceChange24h >= 0 ? "#22c55e" : "#ef4444" }}
+              >
+                {overview.priceChange24h >= 0 ? "+" : ""}
+                {overview.priceChange24h.toFixed(1)}% 24h
+              </span>
+            )}
+            <div className="h-3 w-px bg-border" />
+            <span className="font-mono text-[9px] text-muted-foreground">
+              MCap {fmtUsd(overview.marketCap)}
+            </span>
+            {overview.liquidity > 0 && (
+              <span className="font-mono text-[9px] text-muted-foreground">
+                Liq {fmtUsd(overview.liquidity)}
+              </span>
+            )}
+            {overview.volume24h > 0 && (
+              <span className="font-mono text-[9px] text-muted-foreground">
+                Vol {fmtUsd(overview.volume24h)}
+              </span>
+            )}
           </>
         )}
-        <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-          Table: top {holders.length.toLocaleString()} holders
+        <span className="ml-auto font-mono text-[9px] text-muted-foreground">
+          {holders.length.toLocaleString()} holders
         </span>
       </div>
 
@@ -457,7 +579,7 @@ export function TokenExplorer() {
           </div>
         </div>
 
-        <div className="flex w-[360px] flex-none border-l border-border overflow-hidden">
+        <div className="flex w-[500px] flex-none border-l border-border overflow-hidden">
           <div className="flex h-full w-full flex-col overflow-hidden">
             <TokenForensicsPanel
               report={showForensics ? forensicsResult : null}
@@ -466,11 +588,26 @@ export function TokenExplorer() {
               selectedClusterId={selectedForensicsClusterId}
               onSelectCluster={setSelectedForensicsClusterId}
             />
+            <div className="flex items-center gap-3 border-b border-border px-3 py-1.5">
+              <span className="font-mono text-[9px] text-muted-foreground">
+                <span className="text-foreground">{(overview?.holder ?? holders.length).toLocaleString()}</span> holders
+              </span>
+              {concentrationStats && (
+                <>
+                  <div className="h-2.5 w-px bg-border" />
+                  <span className="font-mono text-[9px] text-muted-foreground">
+                    Top 10 own{" "}
+                    <span className="text-primary">{concentrationStats.top10.toFixed(1)}%</span>
+                  </span>
+                </>
+              )}
+            </div>
             <div className="min-h-0 flex-1 overflow-hidden">
               <HolderTable
                 holders={holders}
                 loading={loading}
                 onHoverAddress={handleHoverAddress}
+                fundingMap={fundingMap}
                 analysisScope={
                   showForensics && forensicsResult
                     ? new Set(forensicsResult.scopeAddresses)

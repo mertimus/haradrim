@@ -345,6 +345,7 @@ export function TraceGraph({
         <Controls
           className="!border-border !bg-card [&>button]:!border-border [&>button]:!bg-card [&>button]:!text-foreground [&>button:hover]:!bg-muted"
           position="bottom-right"
+          showInteractive={false}
         />
       </ReactFlow>
 

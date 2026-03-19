@@ -10,9 +10,20 @@ function getCounterpartyAddressFromUrl(): string {
   return match?.[1] ?? "";
 }
 
-type AppMode = "trace" | "counterparties";
+function getTokenAddressFromUrl(): string {
+  const match = window.location.pathname.match(/^\/token\/([A-Za-z0-9]+)$/);
+  return match?.[1] ?? "";
+}
+
+type AppMode = "trace" | "counterparties" | "tokens";
 
 function getModeFromUrl(): AppMode {
+  if (
+    window.location.pathname === "/tokens"
+    || window.location.pathname.startsWith("/token/")
+  ) {
+    return "tokens";
+  }
   if (
     window.location.pathname.startsWith("/counterparties")
     || window.location.pathname.startsWith("/wallet")
@@ -24,6 +35,10 @@ function getModeFromUrl(): AppMode {
 }
 
 function setModeInUrl(mode: AppMode, address = ""): void {
+  if (mode === "tokens") {
+    window.history.pushState({}, "", address ? `/token/${address}` : "/tokens");
+    return;
+  }
   if (mode === "counterparties") {
     window.history.pushState({}, "", address ? `/counterparties/${address}` : "/counterparties");
     return;
@@ -49,16 +64,22 @@ const CounterpartyExplorer = lazy(async () => ({
   default: (await import("@/components/CounterpartyExplorer")).CounterpartyExplorer,
 }));
 
+const TokenExplorer = lazy(async () => ({
+  default: (await import("@/components/TokenExplorer")).TokenExplorer,
+}));
+
 export default function App() {
   const [mode, setMode] = useState<AppMode>(getModeFromUrl);
   const [traceAddress, setTraceAddress] = useState(getTraceAddressFromUrl);
   const [counterpartyAddress, setCounterpartyAddress] = useState(getCounterpartyAddressFromUrl);
+  const [tokenAddress, setTokenAddress] = useState(getTokenAddressFromUrl);
 
   useEffect(() => {
     const handlePopState = () => {
       setMode(getModeFromUrl());
       setTraceAddress(getTraceAddressFromUrl());
       setCounterpartyAddress(getCounterpartyAddressFromUrl());
+      setTokenAddress(getTokenAddressFromUrl());
     };
 
     window.addEventListener("popstate", handlePopState);
@@ -66,8 +87,14 @@ export default function App() {
   }, []);
 
   const activeAddress = useMemo(
-    () => (mode === "trace" ? traceAddress : counterpartyAddress),
-    [counterpartyAddress, mode, traceAddress],
+    () => (
+      mode === "trace"
+        ? traceAddress
+        : mode === "tokens"
+          ? tokenAddress
+          : counterpartyAddress
+    ),
+    [counterpartyAddress, mode, tokenAddress, traceAddress],
   );
 
   return (
@@ -102,12 +129,18 @@ export default function App() {
           <nav className="flex gap-1">
             {([
               ["counterparties", "Counterparties"],
+              ["tokens", "Tokens"],
               ["trace", "Trace"],
             ] as const).map(([nextMode, label]) => (
               <button
                 key={nextMode}
                 onClick={() => {
-                  const address = nextMode === "trace" ? traceAddress : counterpartyAddress;
+                  const address =
+                    nextMode === "trace"
+                      ? traceAddress
+                      : nextMode === "tokens"
+                        ? tokenAddress
+                        : counterpartyAddress;
                   setMode(nextMode);
                   setModeInUrl(nextMode, address);
                 }}
@@ -123,16 +156,24 @@ export default function App() {
           </nav>
 
           <span className="ml-auto text-right font-mono text-[9px] text-muted-foreground/40">
-            Computed at runtime via{" "}
-            <a
-              href="https://www.helius.dev/docs/rpc/gettransactionsforaddress"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary/40 underline underline-offset-2 transition-colors hover:text-primary/70"
-            >
-              Helius APIs
-            </a>
-            {" "}— no indexers
+            {mode === "tokens" ? (
+              <>
+                Holder snapshots via Helius RPC + Birdeye
+              </>
+            ) : (
+              <>
+                Computed at runtime via{" "}
+                <a
+                  href="https://www.helius.dev/docs/rpc/gettransactionsforaddress"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary/40 underline underline-offset-2 transition-colors hover:text-primary/70"
+                >
+                  Helius APIs
+                </a>
+                {" "}— no indexers
+              </>
+            )}
           </span>
         </div>
       </header>
@@ -143,6 +184,11 @@ export default function App() {
             <TraceExplorer
               initialAddress={traceAddress}
               onRouteAddressChange={setTraceAddress}
+            />
+          ) : mode === "tokens" ? (
+            <TokenExplorer
+              initialAddress={tokenAddress}
+              onRouteAddressChange={setTokenAddress}
             />
           ) : (
             <CounterpartyExplorer

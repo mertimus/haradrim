@@ -38,6 +38,10 @@ export interface TokenOverview {
   price: number;
   supply: number;
   decimals: number;
+  liquidity: number;
+  volume24h: number;
+  priceChange24h: number;
+  priceChange1h: number;
 }
 
 export interface TokenHolder {
@@ -48,6 +52,7 @@ export interface TokenHolder {
   ownerAccountType?: "wallet" | "program" | "token" | "other" | "unknown";
   ownerProgram?: string;
   ownerProgramLabel?: string;
+  identityCategory?: string;
 }
 
 interface RpcTokenAccountInfo {
@@ -161,6 +166,49 @@ export function getTrendingTokens(): Promise<TrendingToken[]> {
   return cached("beTrending", "all", TTL_TRENDING, _getTrendingTokens);
 }
 
+export interface TokenSearchResult {
+  address: string;
+  name: string;
+  symbol: string;
+  logoURI: string;
+  price: number;
+  marketCap: number;
+  liquidity: number;
+  volume24h: number;
+}
+
+export async function searchTokens(query: string): Promise<TokenSearchResult[]> {
+  if (!query || query.length < 2) return [];
+
+  function parseResults(items: Record<string, unknown>[]): TokenSearchResult[] {
+    return items.map((t) => ({
+      address: String(t.address ?? ""),
+      name: String(t.name ?? ""),
+      symbol: String(t.symbol ?? ""),
+      logoURI: String(t.logoURI ?? t.logo_uri ?? t.image ?? ""),
+      price: Number(t.price ?? 0),
+      marketCap: Number(t.market_cap ?? t.mc ?? t.fdv ?? 0),
+      liquidity: Number(t.liquidity ?? 0),
+      volume24h: Number(t.volume_24h_usd ?? t.v24hUSD ?? 0),
+    })).filter((t) => t.address && t.symbol);
+  }
+
+  // v3/search
+  try {
+    const url = `${BASE}/defi/v3/search?chain=solana&keyword=${encodeURIComponent(query)}&target=token&sort_by=volume_24h_usd&sort_type=desc&limit=8`;
+    const res = await fetch(url, { headers: HEADERS });
+    if (!res.ok) return [];
+    const json = await res.json();
+    // v3/search nests tokens: { data: { items: [ { type: "token", result: [...] } ] } }
+    const groups: Record<string, unknown>[] = json.data?.items ?? [];
+    const tokenGroup = groups.find((g) => g.type === "token");
+    const tokens: Record<string, unknown>[] = (tokenGroup?.result as Record<string, unknown>[]) ?? [];
+    return parseResults(tokens);
+  } catch {
+    return [];
+  }
+}
+
 async function _getTokenOverview(
   address: string,
 ): Promise<TokenOverview | null> {
@@ -192,6 +240,10 @@ async function _getTokenOverview(
     holder: Number(d.holder ?? 0),
     price,
     supply,
+    liquidity: Number(d.liquidity ?? d.realMc ?? 0),
+    volume24h: Number(d.v24hUSD ?? d.volume24h ?? 0),
+    priceChange24h: Number(d.priceChange24hPercent ?? d.price24hChangePercent ?? 0),
+    priceChange1h: Number(d.priceChange1hPercent ?? d.price1hChangePercent ?? 0),
     decimals: Number(d.decimals ?? 0),
   };
 }
