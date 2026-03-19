@@ -113,6 +113,26 @@ function rememberTokenAccountInfo(map, account, next) {
   });
 }
 
+function getInstructionAuthority(instruction) {
+  return getInstructionInfoString(instruction, "owner")
+    ?? getInstructionInfoString(instruction, "authority")
+    ?? getInstructionInfoString(instruction, "wallet");
+}
+
+function getReleasedAccountLamports(tx, account) {
+  if (!tx.meta) return undefined;
+  const accountKeys = (tx.transaction?.message?.accountKeys ?? []).map(resolveKey);
+  const accountIndex = accountKeys.indexOf(account);
+  if (accountIndex < 0) return undefined;
+
+  const preBalance = tx.meta.preBalances?.[accountIndex];
+  const postBalance = tx.meta.postBalances?.[accountIndex];
+  if (!Number.isFinite(preBalance) || !Number.isFinite(postBalance)) return undefined;
+
+  const released = BigInt(Math.trunc(preBalance)) - BigInt(Math.trunc(postBalance));
+  return released > 0n ? released : undefined;
+}
+
 export function buildTokenAccountInfo(tx) {
   const infoMap = new Map();
   const accountKeys = (tx.transaction?.message?.accountKeys ?? []).map(resolveKey);
@@ -152,16 +172,32 @@ export function buildTokenAccountInfo(tx) {
       continue;
     }
 
+    if (!instruction.parsed?.type) continue;
+
+    if (
+      instruction.parsed.type === "initializeAccount"
+      || instruction.parsed.type === "initializeAccount2"
+      || instruction.parsed.type === "initializeAccount3"
+    ) {
+      const account = getInstructionInfoString(instruction, "account");
+      const owner = getInstructionInfoString(instruction, "owner");
+      const mint = getInstructionInfoString(instruction, "mint");
+      rememberTokenAccountInfo(infoMap, account, { owner, mint });
+      continue;
+    }
+
+    const authority = getInstructionAuthority(instruction);
+    if (instruction.parsed.type === "closeAccount") {
+      const account = getInstructionInfoString(instruction, "account");
+      rememberTokenAccountInfo(infoMap, account, { owner: authority });
+      continue;
+    }
+
     const source = getInstructionInfoString(instruction, "source");
     const destination = getInstructionInfoString(instruction, "destination");
     const mint = getInstructionInfoString(instruction, "mint");
     const tokenAmount = getInstructionInfoObject(instruction, "tokenAmount");
     const decimals = typeof tokenAmount?.decimals === "number" ? tokenAmount.decimals : undefined;
-
-    const authority =
-      getInstructionInfoString(instruction, "owner")
-      ?? getInstructionInfoString(instruction, "authority")
-      ?? getInstructionInfoString(instruction, "wallet");
 
     if (source) rememberTokenAccountInfo(infoMap, source, { owner: authority, mint, decimals });
     if (destination) rememberTokenAccountInfo(infoMap, destination, { mint, decimals });
@@ -280,54 +316,76 @@ export function parseTraceTransferEvents(txs, walletAddress) {
         && instruction.parsed?.type
       ) {
         if (
-          instruction.parsed.type !== "transfer"
-          && instruction.parsed.type !== "transferChecked"
-          && instruction.parsed.type !== "transferCheckedWithFee"
+          instruction.parsed.type === "transfer"
+          || instruction.parsed.type === "transferChecked"
+          || instruction.parsed.type === "transferCheckedWithFee"
         ) {
-          continue;
-        }
+          const source = getInstructionInfoString(instruction, "source");
+          const destination = getInstructionInfoString(instruction, "destination");
+          if (!source || !destination) continue;
 
-        const source = getInstructionInfoString(instruction, "source");
-        const destination = getInstructionInfoString(instruction, "destination");
-        if (!source || !destination) continue;
+          const tokenAmountInfo = getInstructionInfoObject(instruction, "tokenAmount");
+          amountRaw =
+            (tokenAmountInfo?.amount != null
+              ? (() => {
+                  try {
+                    return BigInt(String(tokenAmountInfo.amount));
+                  } catch {
+                    return undefined;
+                  }
+                })()
+              : undefined)
+            ?? getInstructionInfoBigInt(instruction, "amount");
+          if (!amountRaw || amountRaw <= 0n) continue;
 
-        const tokenAmountInfo = getInstructionInfoObject(instruction, "tokenAmount");
-        amountRaw =
-          (tokenAmountInfo?.amount != null
-            ? (() => {
-                try {
-                  return BigInt(String(tokenAmountInfo.amount));
-                } catch {
-                  return undefined;
-                }
-              })()
-            : undefined)
-          ?? getInstructionInfoBigInt(instruction, "amount");
-        if (!amountRaw || amountRaw <= 0n) continue;
+          const sourceInfo = tokenAccountInfo.get(source);
+          const destinationInfo = tokenAccountInfo.get(destination);
+          const sourceOwner = sourceInfo?.owner ?? getInstructionAuthority(instruction);
+          const destinationOwner = destinationInfo?.owner;
+          mint = getInstructionInfoString(instruction, "mint") ?? sourceInfo?.mint ?? destinationInfo?.mint;
+          decimals =
+            typeof tokenAmountInfo?.decimals === "number"
+              ? tokenAmountInfo.decimals
+              : sourceInfo?.decimals ?? destinationInfo?.decimals ?? 0;
 
-        const sourceInfo = tokenAccountInfo.get(source);
-        const destinationInfo = tokenAccountInfo.get(destination);
-        const sourceOwner = sourceInfo?.owner;
-        const destinationOwner = destinationInfo?.owner;
-        mint = getInstructionInfoString(instruction, "mint") ?? sourceInfo?.mint ?? destinationInfo?.mint;
-        decimals =
-          typeof tokenAmountInfo?.decimals === "number"
-            ? tokenAmountInfo.decimals
-            : sourceInfo?.decimals ?? destinationInfo?.decimals ?? 0;
+          if (sourceOwner === walletAddress && destinationOwner && destinationOwner !== walletAddress) {
+            direction = "outflow";
+            counterparty = destinationOwner;
+          } else if (destinationOwner === walletAddress && sourceOwner && sourceOwner !== walletAddress) {
+            direction = "inflow";
+            counterparty = sourceOwner;
+          } else {
+            continue;
+          }
 
-        if (sourceOwner === walletAddress && destinationOwner && destinationOwner !== walletAddress) {
-          direction = "outflow";
-          counterparty = destinationOwner;
-        } else if (destinationOwner === walletAddress && sourceOwner && sourceOwner !== walletAddress) {
-          direction = "inflow";
-          counterparty = sourceOwner;
+          if (!mint) continue;
+          assetId = mint;
+          kind = "token";
+        } else if (instruction.parsed.type === "closeAccount") {
+          const account = getInstructionInfoString(instruction, "account");
+          const destination = getInstructionInfoString(instruction, "destination");
+          const owner = tokenAccountInfo.get(account ?? "")?.owner ?? getInstructionAuthority(instruction);
+          if (!account || !destination || !owner) continue;
+
+          amountRaw = getReleasedAccountLamports(tx, account);
+          if (!amountRaw || amountRaw <= 0n) continue;
+
+          if (owner === walletAddress && destination !== walletAddress) {
+            direction = "outflow";
+            counterparty = destination;
+          } else if (destination === walletAddress && owner !== walletAddress) {
+            direction = "inflow";
+            counterparty = owner;
+          } else {
+            continue;
+          }
+
+          assetId = NATIVE_SOL_ASSET_ID;
+          kind = "native";
+          decimals = 9;
         } else {
           continue;
         }
-
-        if (!mint) continue;
-        assetId = mint;
-        kind = "token";
       } else {
         continue;
       }
