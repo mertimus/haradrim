@@ -62,8 +62,29 @@ function resolveKey(key) {
 
 function flattenInstructions(tx) {
   const topLevel = tx.transaction?.message?.instructions ?? [];
-  const inner = tx.meta?.innerInstructions?.flatMap((entry) => entry.instructions ?? []) ?? [];
-  return [...topLevel, ...inner];
+  const innerByIndex = new Map();
+
+  for (const entry of tx.meta?.innerInstructions ?? []) {
+    const bucket = innerByIndex.get(entry.index) ?? [];
+    bucket.push(...(entry.instructions ?? []));
+    innerByIndex.set(entry.index, bucket);
+  }
+
+  const ordered = [];
+  for (let index = 0; index < topLevel.length; index += 1) {
+    ordered.push(topLevel[index]);
+    const inner = innerByIndex.get(index);
+    if (inner) {
+      ordered.push(...inner);
+      innerByIndex.delete(index);
+    }
+  }
+
+  for (const remaining of innerByIndex.values()) {
+    ordered.push(...remaining);
+  }
+
+  return ordered;
 }
 
 function getInstructionInfoString(instruction, key) {
@@ -206,6 +227,187 @@ export function buildTokenAccountInfo(tx) {
   return infoMap;
 }
 
+function makeForwardingKey(...parts) {
+  return parts.map((part) => typeof part === "bigint" ? part.toString() : part).join(":");
+}
+
+function countByKey(items, keyFor) {
+  const counts = new Map();
+  for (const item of items) {
+    const key = keyFor(item);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function inferNativeForwardingEvents(transfers, walletAddress, signature, timestamp) {
+  const events = [];
+  const directOutflows = transfers.filter((t) => t.source === walletAddress && t.destination !== walletAddress);
+  const directInflows = transfers.filter((t) => t.destination === walletAddress && t.source !== walletAddress);
+  const nonWalletTransfers = transfers.filter((t) => t.source !== walletAddress && t.destination !== walletAddress);
+
+  if (nonWalletTransfers.length === 0) return events;
+
+  const directOutflowCounts = countByKey(
+    directOutflows,
+    (t) => makeForwardingKey(t.destination, t.lamports),
+  );
+  const directInflowCounts = countByKey(
+    directInflows,
+    (t) => makeForwardingKey(t.source, t.lamports),
+  );
+  const forwardedOutflowCounts = countByKey(
+    nonWalletTransfers,
+    (t) => makeForwardingKey(t.source, t.lamports),
+  );
+  const upstreamInflowCounts = countByKey(
+    nonWalletTransfers,
+    (t) => makeForwardingKey(t.destination, t.lamports),
+  );
+
+  for (const transfer of nonWalletTransfers) {
+    const outflowKey = makeForwardingKey(transfer.source, transfer.lamports);
+    if (
+      directOutflowCounts.get(outflowKey) === 1
+      && forwardedOutflowCounts.get(outflowKey) === 1
+    ) {
+      const direct = directOutflows.find(
+        (candidate) =>
+          candidate.destination === transfer.source
+          && candidate.lamports === transfer.lamports
+          && candidate.order < transfer.order,
+      );
+      if (direct) {
+        events.push({
+          signature,
+          timestamp,
+          direction: "outflow",
+          counterparty: transfer.destination,
+          assetId: NATIVE_SOL_ASSET_ID,
+          kind: "native",
+          decimals: 9,
+          rawAmount: transfer.lamports.toString(),
+          uiAmount: bigintToUiAmount(transfer.lamports, 9),
+        });
+      }
+    }
+
+    const inflowKey = makeForwardingKey(transfer.destination, transfer.lamports);
+    if (
+      directInflowCounts.get(inflowKey) === 1
+      && upstreamInflowCounts.get(inflowKey) === 1
+    ) {
+      const direct = directInflows.find(
+        (candidate) =>
+          candidate.source === transfer.destination
+          && candidate.lamports === transfer.lamports
+          && transfer.order < candidate.order,
+      );
+      if (direct) {
+        events.push({
+          signature,
+          timestamp,
+          direction: "inflow",
+          counterparty: transfer.source,
+          assetId: NATIVE_SOL_ASSET_ID,
+          kind: "native",
+          decimals: 9,
+          rawAmount: transfer.lamports.toString(),
+          uiAmount: bigintToUiAmount(transfer.lamports, 9),
+        });
+      }
+    }
+  }
+
+  return events;
+}
+
+function inferTokenForwardingEvents(transfers, walletAddress, signature, timestamp) {
+  const events = [];
+  const directOutflows = transfers.filter((t) => t.sourceOwner === walletAddress && t.destinationOwner !== walletAddress);
+  const directInflows = transfers.filter((t) => t.destinationOwner === walletAddress && t.sourceOwner !== walletAddress);
+  const nonWalletTransfers = transfers.filter((t) => t.sourceOwner !== walletAddress && t.destinationOwner !== walletAddress);
+
+  if (nonWalletTransfers.length === 0) return events;
+
+  const directOutflowCounts = countByKey(
+    directOutflows,
+    (t) => makeForwardingKey(t.destinationOwner, t.mint, t.amountRaw),
+  );
+  const directInflowCounts = countByKey(
+    directInflows,
+    (t) => makeForwardingKey(t.sourceOwner, t.mint, t.amountRaw),
+  );
+  const forwardedOutflowCounts = countByKey(
+    nonWalletTransfers,
+    (t) => makeForwardingKey(t.sourceOwner, t.mint, t.amountRaw),
+  );
+  const upstreamInflowCounts = countByKey(
+    nonWalletTransfers,
+    (t) => makeForwardingKey(t.destinationOwner, t.mint, t.amountRaw),
+  );
+
+  for (const transfer of nonWalletTransfers) {
+    const outflowKey = makeForwardingKey(transfer.sourceOwner, transfer.mint, transfer.amountRaw);
+    if (
+      directOutflowCounts.get(outflowKey) === 1
+      && forwardedOutflowCounts.get(outflowKey) === 1
+    ) {
+      const direct = directOutflows.find(
+        (candidate) =>
+          candidate.destinationOwner === transfer.sourceOwner
+          && candidate.mint === transfer.mint
+          && candidate.amountRaw === transfer.amountRaw
+          && candidate.order < transfer.order,
+      );
+      if (direct) {
+        events.push({
+          signature,
+          timestamp,
+          direction: "outflow",
+          counterparty: transfer.destinationOwner,
+          assetId: transfer.mint,
+          kind: "token",
+          mint: transfer.mint,
+          decimals: transfer.decimals,
+          rawAmount: transfer.amountRaw.toString(),
+          uiAmount: bigintToUiAmount(transfer.amountRaw, transfer.decimals),
+        });
+      }
+    }
+
+    const inflowKey = makeForwardingKey(transfer.destinationOwner, transfer.mint, transfer.amountRaw);
+    if (
+      directInflowCounts.get(inflowKey) === 1
+      && upstreamInflowCounts.get(inflowKey) === 1
+    ) {
+      const direct = directInflows.find(
+        (candidate) =>
+          candidate.sourceOwner === transfer.destinationOwner
+          && candidate.mint === transfer.mint
+          && candidate.amountRaw === transfer.amountRaw
+          && transfer.order < candidate.order,
+      );
+      if (direct) {
+        events.push({
+          signature,
+          timestamp,
+          direction: "inflow",
+          counterparty: transfer.sourceOwner,
+          assetId: transfer.mint,
+          kind: "token",
+          mint: transfer.mint,
+          decimals: transfer.decimals,
+          rawAmount: transfer.amountRaw.toString(),
+          uiAmount: bigintToUiAmount(transfer.amountRaw, transfer.decimals),
+        });
+      }
+    }
+  }
+
+  return events;
+}
+
 function collectWalletMints(walletMints, tx, walletAddress) {
   for (const tb of tx.meta?.preTokenBalances ?? []) {
     if (tb.owner === walletAddress && (tb.uiTokenAmount.uiAmount ?? 0) > 0) {
@@ -280,7 +482,12 @@ export function parseTraceTransferEvents(txs, walletAddress) {
     const signature = tx.transaction?.signatures?.[0] ?? "";
     const tokenAccountInfo = buildTokenAccountInfo(tx);
 
-    for (const instruction of flattenInstructions(tx)) {
+    // Track all transfers in this tx for same-tx forwarding chain detection.
+    // Pattern: walletAddress → X → Y  (single-hop pass-through)
+    const txNativeTransfers = [];
+    const txTokenTransfers = [];
+
+    for (const [order, instruction] of flattenInstructions(tx).entries()) {
       let direction = null;
       let counterparty;
       let assetId;
@@ -298,6 +505,9 @@ export function parseTraceTransferEvents(txs, walletAddress) {
         const destination = getInstructionInfoString(instruction, "destination");
         const lamports = getInstructionInfoBigInt(instruction, "lamports");
         if (!source || !destination || !lamports || lamports <= 0n) continue;
+
+        txNativeTransfers.push({ source, destination, lamports, order });
+
         if (source === walletAddress && destination !== walletAddress) {
           direction = "outflow";
           counterparty = destination;
@@ -347,6 +557,10 @@ export function parseTraceTransferEvents(txs, walletAddress) {
             typeof tokenAmountInfo?.decimals === "number"
               ? tokenAmountInfo.decimals
               : sourceInfo?.decimals ?? destinationInfo?.decimals ?? 0;
+
+          if (sourceOwner && destinationOwner && mint) {
+            txTokenTransfers.push({ sourceOwner, destinationOwner, mint, decimals, amountRaw, order });
+          }
 
           if (sourceOwner === walletAddress && destinationOwner && destinationOwner !== walletAddress) {
             direction = "outflow";
@@ -404,6 +618,9 @@ export function parseTraceTransferEvents(txs, walletAddress) {
         uiAmount: bigintToUiAmount(amountRaw, decimals),
       });
     }
+
+    events.push(...inferNativeForwardingEvents(txNativeTransfers, walletAddress, signature, timestamp));
+    events.push(...inferTokenForwardingEvents(txTokenTransfers, walletAddress, signature, timestamp));
   }
 
   return events;

@@ -4,8 +4,10 @@ import { buildGraphData, parseTraceTransferEvents } from "@/lib/parse-transactio
 const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const WALLET = "86xCnPeV69n6t3DnyGvkKobf9FdN2H9oiVDdaMpo2MMY";
 const COUNTERPARTY = "BgdZ8o5eG6u8dR6c2QxJmK5f4nLp2sT9vYw8aBcDeFg";
+const FORWARDED_COUNTERPARTY = "DKDnaM3y9aGxCkVLqacqnzhbFzBMMBSffRcnkswEtoju";
 const MINT = "Mint111111111111111111111111111111111111111";
 const SOURCE_TOKEN = "SrcTok111111111111111111111111111111111111";
+const MID_TOKEN = "MidTok111111111111111111111111111111111111";
 const DEST_TOKEN = "DstTok111111111111111111111111111111111111";
 
 describe("buildGraphData", () => {
@@ -157,5 +159,245 @@ describe("parseTraceTransferEvents", () => {
       rawAmount: "2039280",
       uiAmount: 0.00203928,
     })]);
+  });
+
+  it("infers a same-tx native pass-through only when order and amount match", () => {
+    const events = parseTraceTransferEvents([
+      {
+        blockTime: 1_710_000_020,
+        transaction: {
+          signatures: ["sig-native-forward"],
+          message: {
+            accountKeys: [WALLET, COUNTERPARTY, FORWARDED_COUNTERPARTY, "11111111111111111111111111111111"],
+            instructions: [
+              {
+                program: "system",
+                programId: "11111111111111111111111111111111",
+                parsed: {
+                  type: "transfer",
+                  info: {
+                    source: WALLET,
+                    destination: COUNTERPARTY,
+                    lamports: "1000000000",
+                  },
+                },
+              },
+              {
+                program: "system",
+                programId: "11111111111111111111111111111111",
+                parsed: {
+                  type: "transfer",
+                  info: {
+                    source: COUNTERPARTY,
+                    destination: FORWARDED_COUNTERPARTY,
+                    lamports: "1000000000",
+                  },
+                },
+              },
+            ],
+          },
+        },
+        meta: {
+          err: null,
+          fee: 0,
+          preBalances: [0, 0, 0, 0],
+          postBalances: [0, 0, 0, 0],
+          preTokenBalances: [],
+          postTokenBalances: [],
+        },
+      } as never,
+    ], WALLET);
+
+    expect(events.filter((event) => event.counterparty === FORWARDED_COUNTERPARTY)).toEqual([
+      expect.objectContaining({
+        signature: "sig-native-forward",
+        direction: "outflow",
+        counterparty: FORWARDED_COUNTERPARTY,
+        rawAmount: "1000000000",
+        uiAmount: 1,
+      }),
+    ]);
+  });
+
+  it("does not infer a native pass-through for mismatched amounts or reversed order", () => {
+    const events = parseTraceTransferEvents([
+      {
+        blockTime: 1_710_000_021,
+        transaction: {
+          signatures: ["sig-native-mismatch"],
+          message: {
+            accountKeys: [WALLET, COUNTERPARTY, FORWARDED_COUNTERPARTY, "11111111111111111111111111111111"],
+            instructions: [
+              {
+                program: "system",
+                programId: "11111111111111111111111111111111",
+                parsed: {
+                  type: "transfer",
+                  info: {
+                    source: WALLET,
+                    destination: COUNTERPARTY,
+                    lamports: "1",
+                  },
+                },
+              },
+              {
+                program: "system",
+                programId: "11111111111111111111111111111111",
+                parsed: {
+                  type: "transfer",
+                  info: {
+                    source: COUNTERPARTY,
+                    destination: FORWARDED_COUNTERPARTY,
+                    lamports: "1000000000",
+                  },
+                },
+              },
+            ],
+          },
+        },
+        meta: {
+          err: null,
+          fee: 0,
+          preBalances: [0, 0, 0, 0],
+          postBalances: [0, 0, 0, 0],
+          preTokenBalances: [],
+          postTokenBalances: [],
+        },
+      } as never,
+      {
+        blockTime: 1_710_000_022,
+        transaction: {
+          signatures: ["sig-native-reversed"],
+          message: {
+            accountKeys: [WALLET, COUNTERPARTY, FORWARDED_COUNTERPARTY, "11111111111111111111111111111111"],
+            instructions: [
+              {
+                program: "system",
+                programId: "11111111111111111111111111111111",
+                parsed: {
+                  type: "transfer",
+                  info: {
+                    source: COUNTERPARTY,
+                    destination: FORWARDED_COUNTERPARTY,
+                    lamports: "1000000000",
+                  },
+                },
+              },
+              {
+                program: "system",
+                programId: "11111111111111111111111111111111",
+                parsed: {
+                  type: "transfer",
+                  info: {
+                    source: WALLET,
+                    destination: COUNTERPARTY,
+                    lamports: "1000000000",
+                  },
+                },
+              },
+            ],
+          },
+        },
+        meta: {
+          err: null,
+          fee: 0,
+          preBalances: [0, 0, 0, 0],
+          postBalances: [0, 0, 0, 0],
+          preTokenBalances: [],
+          postTokenBalances: [],
+        },
+      } as never,
+    ], WALLET);
+
+    expect(events.filter((event) => event.counterparty === FORWARDED_COUNTERPARTY)).toHaveLength(0);
+  });
+
+  it("infers a same-tx token pass-through only when the downstream leg matches exactly", () => {
+    const events = parseTraceTransferEvents([
+      {
+        blockTime: 1_710_000_030,
+        transaction: {
+          signatures: ["sig-token-forward"],
+          message: {
+            accountKeys: [WALLET, COUNTERPARTY, FORWARDED_COUNTERPARTY, SOURCE_TOKEN, MID_TOKEN, DEST_TOKEN, MINT, TOKEN_PROGRAM_ID],
+            instructions: [
+              {
+                program: "spl-token",
+                programId: TOKEN_PROGRAM_ID,
+                parsed: {
+                  type: "transferChecked",
+                  info: {
+                    source: SOURCE_TOKEN,
+                    destination: MID_TOKEN,
+                    mint: MINT,
+                    authority: WALLET,
+                    tokenAmount: {
+                      amount: "4200000",
+                      decimals: 6,
+                    },
+                  },
+                },
+              },
+              {
+                program: "spl-token",
+                programId: TOKEN_PROGRAM_ID,
+                parsed: {
+                  type: "transferChecked",
+                  info: {
+                    source: MID_TOKEN,
+                    destination: DEST_TOKEN,
+                    mint: MINT,
+                    authority: COUNTERPARTY,
+                    tokenAmount: {
+                      amount: "4200000",
+                      decimals: 6,
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+        meta: {
+          err: null,
+          fee: 0,
+          preBalances: [0, 0, 0, 0, 0, 0, 0, 0],
+          postBalances: [0, 0, 0, 0, 0, 0, 0, 0],
+          preTokenBalances: [
+            {
+              accountIndex: 3,
+              mint: MINT,
+              owner: WALLET,
+              uiTokenAmount: { amount: "4200000", decimals: 6, uiAmount: 4.2 },
+            },
+            {
+              accountIndex: 4,
+              mint: MINT,
+              owner: COUNTERPARTY,
+              uiTokenAmount: { amount: "0", decimals: 6, uiAmount: 0 },
+            },
+            {
+              accountIndex: 5,
+              mint: MINT,
+              owner: FORWARDED_COUNTERPARTY,
+              uiTokenAmount: { amount: "0", decimals: 6, uiAmount: 0 },
+            },
+          ],
+          postTokenBalances: [],
+        },
+      } as never,
+    ], WALLET);
+
+    expect(events.filter((event) => event.counterparty === FORWARDED_COUNTERPARTY)).toEqual([
+      expect.objectContaining({
+        signature: "sig-token-forward",
+        direction: "outflow",
+        counterparty: FORWARDED_COUNTERPARTY,
+        assetId: MINT,
+        kind: "token",
+        rawAmount: "4200000",
+        uiAmount: 4.2,
+      }),
+    ]);
   });
 });
