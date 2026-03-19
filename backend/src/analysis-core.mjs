@@ -762,24 +762,15 @@ async function analyzeTraceEvents(address, txs, onEnriched) {
   const enrichInBackground = async () => {
     const uniqueCounterparties = [...new Set(rawEvents.map((event) => event.counterparty))];
     const accountTypeMap = await getAccountTypesParallel(uniqueCounterparties).catch(() => new Map());
-    const walletEvents = rawEvents.filter((event) => {
-      const info = accountTypeMap.get(event.counterparty);
-      return !info || info.type === "wallet" || info.type === "unknown";
-    });
-
-    if (walletEvents.length === 0) {
-      return buildTraceNodeFlows(address, []);
-    }
-
-    const ranked = summarizeTraceCounterparties(walletEvents);
+    const ranked = summarizeTraceCounterparties(rawEvents);
     const [identityMap, tokenMetaMap] = await Promise.all([
       getBatchIdentity(ranked.slice(0, 500).map((entry) => entry.address)).catch(() => new Map()),
       getTokenMetadataBatch(
-        [...new Set(walletEvents.map((event) => event.mint).filter(Boolean))].slice(0, 400),
+        [...new Set(rawEvents.map((event) => event.mint).filter(Boolean))].slice(0, 400),
       ).catch(() => new Map()),
     ]);
 
-    const enrichedEvents = enrichEvents(walletEvents, identityMap, tokenMetaMap, accountTypeMap);
+    const enrichedEvents = enrichEvents(rawEvents, identityMap, tokenMetaMap, accountTypeMap);
     return buildTraceNodeFlows(address, enrichedEvents);
   };
 
@@ -820,4 +811,5 @@ export const analysisInternals = {
   parseTransactions,
   parseTraceTransferEvents,
   buildTraceNodeFlows,
+  analyzeTraceEvents,
 };

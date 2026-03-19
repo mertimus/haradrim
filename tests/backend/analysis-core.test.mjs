@@ -1,7 +1,22 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
-import { analysisInternals } from "../../backend/src/analysis-core.mjs";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const getAccountTypesParallelMock = vi.fn();
+const getBatchIdentityMock = vi.fn();
+const getTokenMetadataBatchMock = vi.fn();
+
+vi.mock("../../backend/src/providers.mjs", async () => {
+  const actual = await vi.importActual("../../backend/src/providers.mjs");
+  return {
+    ...actual,
+    getAccountTypesParallel: getAccountTypesParallelMock,
+    getBatchIdentity: getBatchIdentityMock,
+    getTokenMetadataBatch: getTokenMetadataBatchMock,
+  };
+});
+
+const { analysisInternals } = await import("../../backend/src/analysis-core.mjs");
 
 const SYSTEM_PROGRAM_ID = "11111111111111111111111111111111";
 const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -51,6 +66,15 @@ function createSystemTransferTx({
     },
   };
 }
+
+beforeEach(() => {
+  getAccountTypesParallelMock.mockReset();
+  getBatchIdentityMock.mockReset();
+  getTokenMetadataBatchMock.mockReset();
+  getAccountTypesParallelMock.mockResolvedValue(new Map());
+  getBatchIdentityMock.mockResolvedValue(new Map());
+  getTokenMetadataBatchMock.mockResolvedValue(new Map());
+});
 
 describe("analysisInternals.parseTransactions", () => {
   it("derives counterparties from explicit transfers, not co-occurring account keys", () => {
@@ -199,5 +223,42 @@ describe("analysisInternals.parseTraceTransferEvents", () => {
       rawAmount: "2039280",
       uiAmount: 0.00203928,
     })]);
+  });
+});
+
+describe("analysisInternals.analyzeTraceEvents", () => {
+  it("preserves standard SOL transfers even when the counterparty currently classifies as non-wallet", async () => {
+    getAccountTypesParallelMock.mockResolvedValue(new Map([
+      [COUNTERPARTY, { type: "program_owned" }],
+    ]));
+
+    let enrichedResult;
+    const tx = createSystemTransferTx({ signature: "sig-sol-history", lamportsList: [172_000_000] });
+
+    const fastResult = await analysisInternals.analyzeTraceEvents(WALLET, [tx], (value) => {
+      enrichedResult = value;
+    });
+
+    expect(fastResult.events).toHaveLength(1);
+    expect(fastResult.events[0]).toMatchObject({
+      signature: "sig-sol-history",
+      counterparty: COUNTERPARTY,
+      assetId: "native:sol",
+      kind: "native",
+      uiAmount: 0.172,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(enrichedResult?.events).toHaveLength(1);
+
+    expect(enrichedResult.events[0]).toMatchObject({
+      signature: "sig-sol-history",
+      counterparty: COUNTERPARTY,
+      assetId: "native:sol",
+      kind: "native",
+      rawAmount: "172000000",
+      uiAmount: 0.172,
+      counterpartyAccountType: "program_owned",
+    });
   });
 });
