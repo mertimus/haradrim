@@ -1003,7 +1003,8 @@ export async function getBatchIdentity(
   let obj = await cached("batchId", key, TTL_IDENTITY, () => _getBatchIdentity(uniqueAddresses));
 
   const missingAddresses = uniqueAddresses.filter((address) => !obj[address]);
-  if (missingAddresses.length > 0) {
+  // Cap individual fallback to avoid blocking when batch fails for many addresses
+  if (missingAddresses.length > 0 && missingAddresses.length <= 10) {
     const recovered = await mapWithConcurrency(
       missingAddresses,
       MAX_METADATA_FETCH_CONCURRENCY,
