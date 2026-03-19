@@ -3,7 +3,7 @@ DigitalOcean App Platform phase-1 layout:
 - `web`: static Vite frontend
 - `api`: single-instance Node backend with in-memory cache
 
-The app spec in [app.yaml](/Users/mertmumtaz/haradrim/.do/app.yaml) is a template.
+The app spec in [app.yaml](.do/app.yaml) is a template.
 Replace:
 
 - `REPLACE_WITH_BACKEND_HELIUS_RPC_URL`

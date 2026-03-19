@@ -1,142 +1,124 @@
-# HARADRIM
+# Haradrim
 
-HARADRIM is a Solana wallet intelligence app for:
+Open-source Solana wallet intelligence tool. Trace fund flows, map counterparty relationships, and discover wallet overlap — all computed live from on-chain data with no indexer required.
 
-- wallet relationship graphs
-- counterparty analysis
-- overlap discovery across wallets
-- trace-based flow inspection
+## Features
 
-The repo is split into a static React frontend and a lightweight Node backend. The backend owns provider access, API keys, in-memory caching, and the heavier wallet/trace analysis endpoints.
+- **Wallet relationship graphs** — visualize who a wallet transacts with, weighted by volume and frequency
+- **Counterparty analysis** — ranked counterparty tables with flow direction, volume, and connection scoring
+- **Multi-wallet comparison** — overlay multiple wallets to find shared counterparties and common funders
+- **Trace-based flow inspection** — drill into a wallet's full transfer history with per-asset, per-direction breakdowns and same-tx pass-through detection
+- **Balance history** — reconstruct historical SOL and token balance curves from raw transaction data
+- **Token forensics** — provenance tracing and holder clustering for SPL tokens
+- **Stablecoin dashboard** — aggregated stablecoin flow analytics
 
 ## Architecture
 
-Current request flow:
+The repo is split into a static React frontend and a lightweight Node backend.
 
-- `frontend` (`src/`): Vite + React UI
-- `backend` (`backend/src/`): same-origin API service
-- `providers`: Helius RPC, Helius wallet API, Birdeye
+```
+src/           → Vite + React + TypeScript frontend
+backend/src/   → Node.js API server (Express)
+tests/         → Vitest test suites (frontend + backend)
+scripts/       → Benchmarking and ops utilities
+.do/           → DigitalOcean App Platform deployment template
+```
 
-Important backend endpoints:
+The backend owns provider access, API keys, in-memory caching, and the heavier wallet/trace analysis endpoints. The frontend communicates exclusively through same-origin `/api` routes.
 
-- `GET /api/healthz`
-- `GET /api/wallets/:address/analysis`
-- `GET /api/traces/:address/flows`
-- `POST /api/helius-rpc`
-- `GET /api/helius-api/...`
-- `GET /api/birdeye-api/...`
+### API endpoints
 
-## Local Development
+| Route | Purpose |
+|---|---|
+| `GET /api/healthz` | Health check |
+| `GET /api/wallets/:address/analysis` | Full counterparty analysis |
+| `GET /api/traces/:address/flows` | Trace-mode flow analysis |
+| `POST /api/helius-rpc` | Proxied RPC calls |
+| `GET /api/helius-api/*` | Proxied Helius REST API |
+| `GET /api/birdeye-api/*` | Proxied Birdeye API |
 
-Install dependencies:
+## Getting started
+
+### Prerequisites
+
+- Node.js 20+
+- A [Helius](https://www.helius.dev/) RPC API key (free tier works)
+- Optionally, a [Birdeye](https://birdeye.so/) API key for token price data
+
+### Install
 
 ```bash
 npm ci
 ```
 
-Run the backend:
+### Configure
+
+Copy the example env file and fill in your keys:
 
 ```bash
-npm run backend:dev
+cp .env.example .env.local
 ```
 
-Run the frontend:
+Required:
+
+| Variable | Description |
+|---|---|
+| `HELIUS_RPC_URL` | Helius mainnet RPC URL with your API key |
+
+Optional:
+
+| Variable | Description |
+|---|---|
+| `BIRDEYE_API_KEY` | Birdeye API key for token prices |
+| `HELIUS_API_KEY` | Helius REST API key (wallet identity, batch endpoints) |
+| `DIALECT_API_KEY` | Dialect API key |
+| `COINGECKO_API_KEY` | CoinGecko API key |
+| `SESSION_SECRET` | Secret for signing anonymous session cookies |
+| `VITE_PUBLIC_HELIUS_RPC_URL` | Separate lightweight RPC URL for browser-side reads |
+
+See `.env.example` for the full list of tuning knobs (cache sizes, concurrency limits, TTLs, rate-limit budgets).
+
+### Run
+
+Start the backend and frontend together:
 
 ```bash
 npm run dev
 ```
 
-The Vite dev server proxies `/api` to `http://localhost:8080` by default. Override that with `BACKEND_DEV_ORIGIN` if needed.
-
-## Environment
-
-Copy `.env.example` to `.env` and fill in the backend values.
-
-Required backend envs:
-
-- `HELIUS_RPC_URL`
-- `BIRDEYE_API_KEY`
-
-Optional backend envs:
-
-- `HELIUS_API_KEY`
-- `SESSION_SECRET`
-- `SESSION_COOKIE_NAME`
-- `SESSION_WINDOW_MS`
-- `SESSION_BUDGET_UNITS`
-- `IP_WINDOW_MS`
-- `IP_BUDGET_UNITS`
-- `CACHE_MAX_ENTRIES`
-- `CACHE_MAX_BODY_BYTES`
-- `REQUEST_BODY_LIMIT_BYTES`
-- `JSON_PROXY_BODY_LIMIT_BYTES`
-- `FETCH_TIMEOUT_MS`
-- `PROXY_TTL_MS`
-- `WALLET_ANALYSIS_TTL_MS`
-- `TRACE_ANALYSIS_TTL_MS`
-- `MAX_SLICE_CONCURRENCY`
-- `MAX_ACCOUNT_TYPE_CONCURRENCY`
-- `MAX_WALLET_ANALYSIS_CONCURRENCY`
-- `MAX_TRACE_ANALYSIS_CONCURRENCY`
-- `MAX_GTFA_RPC_CONCURRENCY`
-
-Optional frontend envs:
-
-- `VITE_PUBLIC_HELIUS_RPC_URL`
-- `VITE_PUBLIC_ORIGIN`
-
-No `VITE_*` secrets should be used.
-
-Recommended RPC split:
-
-- `HELIUS_RPC_URL`: mainnet Helius RPC URL with the backend API key for GTFA-heavy server-side history fetches
-- `VITE_PUBLIC_HELIUS_RPC_URL`: fast public/lightweight frontend RPC URL for browser-side reads only
-
-## Heavy Route Protection
-
-Heavy GTFA-based routes are now guarded server-side:
-
-- `GET /api/wallets/:address/analysis`
-- `GET /api/traces/:address/flows`
-- `POST /api/helius-rpc` only when the RPC method is `getTransactionsForAddress`
-
-Current protections:
-
-- signed anonymous session cookie
-- weighted heavy-request budgets per session and per IP
-- per-route concurrency caps
-- request body limits
-- explicit allowlists for public proxy paths and RPC methods
-- stripped proxy headers instead of broad header forwarding
-
-Lightweight enrichment calls are intentionally not budgeted in this phase.
-
-GTFA requests from the frontend now always go through the backend proxy, even if `VITE_PUBLIC_HELIUS_RPC_URL` is set for lightweight browser-side reads.
-
-## Quality Checks
+Or separately:
 
 ```bash
-npm run lint
-npm run build
-npm run test
+npm run backend:dev   # backend on :8080
+npm run dev:frontend  # Vite dev server on :5173, proxies /api to backend
 ```
 
-## DigitalOcean
+### Build and test
 
-Deployment files live in [.do/app.yaml](/Users/mertmumtaz/haradrim/.do/app.yaml) and [.do/README.md](/Users/mertmumtaz/haradrim/.do/README.md).
+```bash
+npm run build
+npm run test
+npm run lint
+```
 
-The intended phase-1 topology is:
+## Rate limiting
 
-- `web`: App Platform static site
-- `api`: single Node web service
+Heavy GTFA-based routes are guarded server-side with:
 
-Keep the API single-instance for now because cache is process-local.
+- Signed anonymous session cookies
+- Weighted request budgets per session and per IP
+- Per-route concurrency caps
+- Request body limits
+- Allowlists for proxy paths and RPC methods
 
-## Remaining Edge Work
+## Deployment
 
-The backend-side guardrails are in place, but two external pieces are still pending for a production-facing rollout:
+A DigitalOcean App Platform template is included in `.do/app.yaml`. See `.do/README.md` for setup instructions. The app can be deployed to any platform that supports a Node backend + static site frontend.
 
-- put the app behind a Cloudflare-proxied custom domain
-- add Cloudflare WAF / rate-limit / Turnstile rules on the heavy routes
+## Contributing
 
-Those are outside this repo and should be layered on top of the backend controls here.
+Contributions are welcome. Please open an issue first to discuss significant changes.
+
+## License
+
+MIT
