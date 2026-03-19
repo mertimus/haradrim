@@ -197,32 +197,27 @@ export function TokenExplorer({
       if (requestId !== analyzeRequestIdRef.current) return;
       if (resolvedOverview) setOverview(resolvedOverview);
 
-      // Phase 3: enrich labels + funding in the background.
-      // Each updates the UI independently as it resolves.
+      // Phase 3: enrich in the background. Each source updates
+      // the UI independently as it resolves — no blocking.
       if (baseHolders.length > 0) {
         const ownerAddresses = baseHolders.map((holder) => holder.owner);
         const snsCandidateAddresses = baseHolders
           .slice(0, GRAPH_TOP_N)
           .map((holder) => holder.owner);
 
-        // Labels: identity + SNS resolve together (both fast)
-        Promise.allSettled([
-          getBatchIdentity(ownerAddresses),
-          getBatchSolDomains(snsCandidateAddresses),
-        ]).then(([identityResult, snsResult]) => {
+        // SNS domains (fast, on-chain lookup)
+        getBatchSolDomains(snsCandidateAddresses).then((snsMap) => {
           if (requestId !== analyzeRequestIdRef.current) return;
-          const identityMap =
-            identityResult.status === "fulfilled"
-              ? identityResult.value
-              : new Map<string, { name?: string }>();
-          const snsMap =
-            snsResult.status === "fulfilled"
-              ? snsResult.value
-              : new Map<string, string>();
-          setHolders(enrichHolders(baseHolders, identityMap, snsMap));
-        });
+          setHolders((prev) => enrichHolders(prev, new Map(), snsMap));
+        }).catch(() => {});
 
-        // Funding: resolves independently (slower, many individual calls)
+        // Identity labels (may fallback to individual calls if batch fails)
+        getBatchIdentity(ownerAddresses).then((identityMap) => {
+          if (requestId !== analyzeRequestIdRef.current) return;
+          setHolders((prev) => enrichHolders(prev, identityMap, new Map()));
+        }).catch(() => {});
+
+        // Funding (slowest, individual calls per holder)
         getBatchFunding(ownerAddresses).then((result) => {
           if (requestId !== analyzeRequestIdRef.current) return;
           setFundingMap(result);
