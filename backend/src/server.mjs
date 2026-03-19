@@ -528,27 +528,117 @@ function responseHeaders(upstreamHeaders, bodyLength) {
   };
 }
 
-async function handleWalletAnalysis(req, res, address, searchParams) {
+function logWalletAnalysisRequest(stage, req, requestId, details = {}) {
+  console.info("[wallet-analysis-request]", JSON.stringify({
+    ...baseRequestLog(req, requestId),
+    stage,
+    ...details,
+  }));
+}
+
+async function handleWalletAnalysis(req, res, address, searchParams, requestId) {
   const range = parseRange(searchParams);
-  const cacheKey = `wallet-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}`;
+  const limit = searchParams.get("limit");
+  const parsedLimit = Number(limit);
+  const fullHistoryRequested = (
+    (!Number.isFinite(parsedLimit) || parsedLimit <= 0)
+    && range.start == null
+    && range.end == null
+  );
+  const cacheKey = `wallet-analysis:${address}:${range.start ?? "all"}:${range.end ?? "all"}:${limit ?? "full"}`;
+  const startedAt = Date.now();
+  const requestDetails = {
+    address,
+    limit: limit ?? "full",
+    start: range.start ?? null,
+    end: range.end ?? null,
+  };
+
+  const targetProfile = await getTraceTargetProfile(address);
+  if (!targetProfile.walletLike) {
+    logWalletAnalysisRequest("rejected-non-wallet", req, requestId, {
+      ...requestDetails,
+      durationMs: Date.now() - startedAt,
+      accountType: targetProfile.accountType,
+      onCurve: targetProfile.onCurve,
+      exists: targetProfile.exists,
+      executable: targetProfile.executable,
+      owner: targetProfile.owner,
+      dataLen: targetProfile.dataLen,
+    });
+    throw createHttpError(
+      422,
+      "wallet_analysis_wallet_only",
+      "Only user-owned wallet addresses can be analyzed here. Programs, PDAs, token accounts, and protocol-owned addresses are not supported.",
+      {
+        accountType: targetProfile.accountType,
+        onCurve: targetProfile.onCurve,
+        exists: targetProfile.exists,
+        executable: targetProfile.executable,
+        owner: targetProfile.owner,
+        dataLen: targetProfile.dataLen,
+      },
+    );
+  }
+
+  if (fullHistoryRequested) {
+    const txCount = await getTxCountForAddress(address);
+    if (txCount > TRACE_FULL_HISTORY_TX_CAP) {
+      logWalletAnalysisRequest("rejected-tx-cap", req, requestId, {
+        ...requestDetails,
+        durationMs: Date.now() - startedAt,
+        txCount,
+        txCap: TRACE_FULL_HISTORY_TX_CAP,
+      });
+      throw createHttpError(
+        422,
+        "wallet_analysis_too_large",
+        `Full-history counterparties analysis is disabled for wallets with more than ${TRACE_FULL_HISTORY_TX_CAP.toLocaleString()} transactions. Start with the quick scan or narrow the time range.`,
+        {
+          txCount,
+          txCap: TRACE_FULL_HISTORY_TX_CAP,
+        },
+      );
+    }
+  }
+
   const cached = getCachedValue(cacheKey);
   if (cached) {
+    logWalletAnalysisRequest("cache-hit", req, requestId, {
+      ...requestDetails,
+      durationMs: Date.now() - startedAt,
+    });
     sendJson(res, 200, cached);
     return;
   }
 
   const pending = getInflightValue(cacheKey);
   if (pending) {
+    logWalletAnalysisRequest("join-inflight", req, requestId, {
+      ...requestDetails,
+      durationMs: Date.now() - startedAt,
+    });
     sendJson(res, 200, await pending);
     return;
   }
 
   enforceHeavyRouteBudget(req, res, HEAVY_ROUTE_POLICIES.walletAnalysis);
+  logWalletAnalysisRequest("analyze-start", req, requestId, requestDetails);
   const result = await withConcurrencyLimit(
     HEAVY_ROUTE_POLICIES.walletAnalysis.concurrencyLabel,
     HEAVY_ROUTE_POLICIES.walletAnalysis.maxConcurrency,
-    () => cachedValue(cacheKey, WALLET_ANALYSIS_TTL_MS, () => analyzeWallet(address, range)),
+    () => cachedValue(
+      cacheKey,
+      WALLET_ANALYSIS_TTL_MS,
+      () => analyzeWallet(address, range, Number.isFinite(parsedLimit) && parsedLimit > 0 ? { limit: parsedLimit } : {}),
+    ),
   );
+  logWalletAnalysisRequest("analyze-complete", req, requestId, {
+    ...requestDetails,
+    durationMs: Date.now() - startedAt,
+    txCount: result.txCount,
+    counterpartyCount: result.counterparties.length,
+  });
   sendJson(res, 200, result);
 }
 
@@ -1145,7 +1235,7 @@ async function requestHandler(req, res) {
     const walletMatch = matchWalletAnalysis(pathname);
     if (walletMatch) {
       assertAllowedMethod(req.method ?? "GET", new Set(["GET"]), pathname);
-      await handleWalletAnalysis(req, res, walletMatch[1], requestUrl.searchParams);
+      await handleWalletAnalysis(req, res, walletMatch[1], requestUrl.searchParams, requestId);
       return;
     }
 

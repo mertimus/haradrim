@@ -351,9 +351,15 @@ async function fetchJson<T>(path: string, options?: FetchJsonOptions & { method?
 export function getWalletAnalysis(
   address: string,
   range?: { start?: number | null; end?: number | null },
+  options?: { limit?: number },
 ): Promise<WalletAnalysisResult> {
+  const params = new URLSearchParams();
+  if (range?.start != null) params.set("start", String(range.start));
+  if (range?.end != null) params.set("end", String(range.end));
+  if (options?.limit != null) params.set("limit", String(options.limit));
+  const query = params.toString();
   return fetchJson<WalletAnalysisResult>(
-    `/wallets/${address}/analysis${buildQuery(range)}`,
+    `/wallets/${address}/analysis${query ? `?${query}` : ""}`,
   );
 }
 

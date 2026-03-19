@@ -503,4 +503,50 @@ describe("TraceExplorer", () => {
       expect(getTraceAnalysis).toHaveBeenLastCalledWith(COUNTERPARTY, undefined, { limit: 2000 });
     });
   });
+
+  it("finds a deep-ranked counterparty when searching by a pasted full address", async () => {
+    const targetAddress = "DKDnaM3y9aGxCkVLqacqnzhbFzBMMBSffRcnkswEtoju";
+    const events = Array.from({ length: 40 }, (_, index) => ({
+      signature: `inflow-${index + 1}`,
+      timestamp: 1712620800 + index,
+      direction: "inflow" as const,
+      counterparty: `Cp${String(index).padStart(2, "0")}111111111111111111111111111111111`,
+      counterpartyLabel: `Counterparty ${index + 1}`,
+      assetId: NATIVE_SOL_ASSET_ID,
+      kind: "native" as const,
+      decimals: 9,
+      rawAmount: "1000000",
+      uiAmount: 0.001,
+      symbol: "SOL",
+      name: "Native SOL",
+    }));
+
+    events.push({
+      signature: "target-inflow-1",
+      timestamp: 1712629999,
+      direction: "inflow",
+      counterparty: targetAddress,
+      assetId: NATIVE_SOL_ASSET_ID,
+      kind: "native",
+      decimals: 9,
+      rawAmount: "172944720",
+      uiAmount: 0.17294472,
+      symbol: "SOL",
+      name: "Native SOL",
+    });
+
+    vi.mocked(getTraceAnalysis).mockResolvedValue(createFlows(events));
+
+    render(<TraceExplorer initialAddress={ADDRESS} />);
+
+    const inflowHeader = await screen.findByText(/Inflow/i);
+    fireEvent.click(inflowHeader);
+
+    fireEvent.change(screen.getByPlaceholderText("Search counterparties..."), {
+      target: { value: `  ${targetAddress}\n` },
+    });
+
+    await screen.findByText(targetAddress);
+    expect(screen.queryByText("No matches")).toBeNull();
+  });
 });

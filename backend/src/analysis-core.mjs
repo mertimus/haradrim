@@ -781,8 +781,11 @@ async function analyzeTraceEvents(address, txs, onEnriched) {
   return fastResult;
 }
 
-export async function analyzeWallet(address, range = {}) {
-  const txs = await fetchTransactions(address, range);
+export async function analyzeWallet(address, range = {}, options = {}) {
+  const txLimit = Number(options.limit);
+  const txs = Number.isFinite(txLimit) && txLimit > 0
+    ? await fetchRecentTransactions(address, { limit: txLimit })
+    : await fetchTransactions(address, range);
   const parsed = parseTransactions(txs, address);
   const [counterparties, transactions] = await Promise.all([
     enrichCounterparties(parsed.counterparties),

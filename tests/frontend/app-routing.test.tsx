@@ -8,8 +8,18 @@ const traceExplorerMock = vi.hoisted(() =>
   )),
 );
 
+const counterpartyExplorerMock = vi.hoisted(() =>
+  vi.fn(({ initialAddress }: { initialAddress?: string }) => (
+    <div data-testid="counterparty-explorer" data-address={initialAddress ?? ""} />
+  )),
+);
+
 vi.mock("@/components/TraceExplorer", () => ({
   TraceExplorer: traceExplorerMock,
+}));
+
+vi.mock("@/components/CounterpartyExplorer", () => ({
+  CounterpartyExplorer: counterpartyExplorerMock,
 }));
 
 const ADDRESS = "8CrRU1NzNpjL3k2BwjW3VixAcX6VFc29KHr4KZg8cs2Y";
@@ -51,6 +61,16 @@ describe("App trace routing", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("trace-explorer").getAttribute("data-address")).toBe(ADDRESS);
+    });
+  });
+
+  it("renders the counterparties explorer for /counterparties/:address", async () => {
+    window.history.pushState({}, "", `/counterparties/${ADDRESS}`);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("counterparty-explorer").getAttribute("data-address")).toBe(ADDRESS);
     });
   });
 });

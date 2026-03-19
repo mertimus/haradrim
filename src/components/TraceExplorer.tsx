@@ -43,6 +43,14 @@ function truncAddr(addr: string): string {
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
 }
 
+function normalizeSearchValue(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function compactSearchValue(value: string): string {
+  return normalizeSearchValue(value).replace(/\s+/g, "");
+}
+
 function fmtCompact(value: number): string {
   if (value < 0.01 && value > 0) return "<0.01";
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -228,14 +236,20 @@ function filterCounterpartiesBySearch(
   searchQuery: string,
   domainMap: Map<string, string>,
 ): TraceCounterparty[] {
-  if (!searchQuery) return counterparties;
+  const normalizedQuery = normalizeSearchValue(searchQuery);
+  if (!normalizedQuery) return counterparties;
 
-  const q = searchQuery.toLowerCase();
+  const compactQuery = compactSearchValue(searchQuery);
   return counterparties.filter((cp) => {
-    const label = cp.label?.toLowerCase() ?? "";
-    const addr = cp.address.toLowerCase();
-    const domain = domainMap.get(cp.address)?.toLowerCase() ?? "";
-    return label.includes(q) || addr.includes(q) || domain.includes(q);
+    const label = normalizeSearchValue(cp.label ?? "");
+    const addr = normalizeSearchValue(cp.address);
+    const domain = normalizeSearchValue(domainMap.get(cp.address) ?? "");
+    return label.includes(normalizedQuery)
+      || addr.includes(normalizedQuery)
+      || domain.includes(normalizedQuery)
+      || compactSearchValue(label).includes(compactQuery)
+      || compactSearchValue(addr).includes(compactQuery)
+      || compactSearchValue(domain).includes(compactQuery);
   });
 }
 
@@ -1711,6 +1725,7 @@ function FlowGroup({
                     isAdded={isAdded}
                     onAdd={() => onAddOne(cp)}
                     domainMap={domainMap}
+                    searchQuery={searchQuery}
                   />
                 );
               })}
@@ -1730,6 +1745,7 @@ function CpTableRow({
   isAdded,
   onAdd,
   domainMap,
+  searchQuery = "",
 }: {
   cp: TraceCounterparty;
   direction: TraceDirection;
@@ -1738,12 +1754,17 @@ function CpTableRow({
   isAdded: boolean;
   onAdd: () => void;
   domainMap: Map<string, string>;
+  searchQuery?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const assets = getDirectionalAssets(cp, direction);
   const txCount = getDirectionalTxCount(cp, direction);
   const displayLabel = cp.label ?? domainMap.get(cp.address);
+  const normalizedAddressSearch = compactSearchValue(searchQuery);
+  const showFullAddress = !displayLabel
+    && normalizedAddressSearch.length >= 12
+    && compactSearchValue(cp.address).includes(normalizedAddressSearch);
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1781,7 +1802,12 @@ function CpTableRow({
                 </>
               ) : (
                 <div className="flex items-center gap-1">
-                  <span className="font-mono text-[9px] text-muted-foreground truncate">{truncAddr(cp.address)}</span>
+                  <span
+                    className={`font-mono text-[9px] text-muted-foreground ${showFullAddress ? "break-all" : "truncate"}`}
+                    title={cp.address}
+                  >
+                    {showFullAddress ? cp.address : truncAddr(cp.address)}
+                  </span>
                   <button
                     onClick={handleCopy}
                     className="shrink-0 opacity-0 group-hover/name:opacity-100 transition-opacity cursor-pointer text-muted-foreground/40 hover:text-primary"
