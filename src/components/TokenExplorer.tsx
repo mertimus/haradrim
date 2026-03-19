@@ -218,7 +218,7 @@ export function TokenExplorer({
         }).catch(() => {});
 
         // Identity labels (may fallback to individual calls if batch fails)
-        getBatchIdentity(ownerAddresses).then((identityMap) => {
+        getBatchIdentity(ownerAddresses, { recoveryLimit: GRAPH_TOP_N }).then((identityMap) => {
           if (requestId !== analyzeRequestIdRef.current) return;
           setHolders((prev) => enrichHolders(prev, identityMap, new Map()));
         }).catch(() => {});

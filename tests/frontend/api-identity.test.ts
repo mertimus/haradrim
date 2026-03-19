@@ -89,7 +89,7 @@ describe("api identity normalization", () => {
     const address = "8cRrU1KsgkgGcLHVapTds6eNJkRjKz5WoD1sW5v7n7L";
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      expect(url).toContain("/helius-api/v1/wallet/batch-identity");
+      expect(url).toContain("/api/helius-api/v1/wallet/batch-identity");
       expect(init?.method).toBe("POST");
       expect(init?.body).toBe(JSON.stringify({ addresses: [address] }));
       return new Response(
@@ -111,7 +111,7 @@ describe("api identity normalization", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if ((init?.method ?? "GET") === "POST") {
-        expect(url).toContain("/helius-api/v1/wallet/batch-identity");
+        expect(url).toContain("/api/helius-api/v1/wallet/batch-identity");
         return new Response(JSON.stringify([]), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -143,7 +143,7 @@ describe("api identity normalization", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if ((init?.method ?? "GET") === "POST") {
-        expect(url).toContain("/helius-api/v1/wallet/batch-identity");
+        expect(url).toContain("/api/helius-api/v1/wallet/batch-identity");
         return new Response(
           JSON.stringify([
             {

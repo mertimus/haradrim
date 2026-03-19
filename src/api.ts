@@ -175,6 +175,10 @@ export interface WalletIdentity {
   tags?: string[];
 }
 
+interface BatchIdentityOptions {
+  recoveryLimit?: number;
+}
+
 export interface TokenBalance {
   mint: string;
   balance: number;
@@ -947,7 +951,7 @@ async function _getBatchIdentity(
     MAX_METADATA_FETCH_CONCURRENCY,
     async (chunk) => {
       try {
-        const url = withHeliusApiKey(`/helius-api/v1/wallet/batch-identity`);
+        const url = withHeliusApiKey(`${WALLET_API}/batch-identity`);
         const res = await fetchWithTimeout(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1012,14 +1016,18 @@ async function _getBatchIdentity(
 
 export async function getBatchIdentity(
   addresses: string[],
+  options: BatchIdentityOptions = {},
 ): Promise<Map<string, WalletIdentity>> {
   const uniqueAddresses = [...new Set(addresses)].filter(isValidSolanaAddress);
   const key = uniqueAddresses.slice().sort().join(",");
   let obj = await cached("batchId", key, TTL_IDENTITY, () => _getBatchIdentity(uniqueAddresses));
+  const recoveryLimit = Number.isFinite(options.recoveryLimit)
+    ? Math.max(0, Math.trunc(options.recoveryLimit ?? 0))
+    : MAX_BATCH_IDENTITY_RECOVERY;
 
   const recoveryAddresses = uniqueAddresses
     .filter((address) => shouldRecoverBatchIdentity(obj[address]))
-    .slice(0, MAX_BATCH_IDENTITY_RECOVERY);
+    .slice(0, recoveryLimit);
 
   if (recoveryAddresses.length > 0) {
     const recovered = await mapWithConcurrency(

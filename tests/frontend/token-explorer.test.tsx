@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TokenExplorer } from "@/components/TokenExplorer";
+import { getBatchIdentity } from "@/api";
 import { getTokenOverview } from "@/birdeye-api";
 import { getTokenHolderSnapshot } from "@/lib/backend-api";
 
@@ -69,5 +70,47 @@ describe("TokenExplorer", () => {
     });
 
     expect(screen.getByTestId("holder-table").textContent).toBe("0");
+  });
+
+  it("requests identity recovery for the first 33 ranked holders", async () => {
+    const holders = Array.from({ length: 40 }, (_, index) => ({
+      owner: `Holder${index + 1}`,
+      uiAmount: 1000 - index,
+      percentage: 10 - index * 0.1,
+    }));
+
+    vi.mocked(getTokenOverview).mockResolvedValue({
+      address: "TestMint1111111111111111111111111111111111",
+      name: "Test Token",
+      symbol: "TEST",
+      image: "",
+      marketCap: 0,
+      holder: holders.length,
+      price: 0,
+      supply: 1000,
+      decimals: 6,
+      liquidity: 0,
+      volume24h: 0,
+      priceChange24h: 0,
+      priceChange1h: 0,
+    });
+    vi.mocked(getTokenHolderSnapshot).mockResolvedValue({
+      mint: "TestMint1111111111111111111111111111111111",
+      supply: 1000,
+      holderCount: holders.length,
+      holders,
+      snapshotAt: Date.now(),
+    });
+
+    render(<TokenExplorer />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("holder-table").textContent).toBe("40");
+    });
+
+    expect(vi.mocked(getBatchIdentity)).toHaveBeenCalledWith(
+      holders.map((holder) => holder.owner),
+      { recoveryLimit: 33 },
+    );
   });
 });
