@@ -45,8 +45,13 @@ function enrichHolders(
   return holders.map((holder) => {
     const identity = identityMap.get(holder.owner);
     const sns = snsMap.get(holder.owner);
-    const label = identity?.name ?? sns ?? holder.label;
-    const enriched = label ? { ...holder, label } : { ...holder };
+    const enriched = { ...holder };
+    // Identity name always wins. SNS only sets label if nothing exists yet.
+    if (identity?.name) {
+      enriched.label = identity.name;
+    } else if (sns && !holder.label) {
+      enriched.label = sns;
+    }
     if (identity?.category) enriched.identityCategory = identity.category;
     return enriched;
   });
