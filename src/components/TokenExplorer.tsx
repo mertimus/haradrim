@@ -197,35 +197,36 @@ export function TokenExplorer({
       if (requestId !== analyzeRequestIdRef.current) return;
       if (resolvedOverview) setOverview(resolvedOverview);
 
-      // Phase 3: enrich labels + funding in the background — graph and table
-      // re-render seamlessly when data arrives.
+      // Phase 3: enrich labels + funding in the background.
+      // Each updates the UI independently as it resolves.
       if (baseHolders.length > 0) {
         const ownerAddresses = baseHolders.map((holder) => holder.owner);
         const snsCandidateAddresses = baseHolders
           .slice(0, GRAPH_TOP_N)
           .map((holder) => holder.owner);
 
-        const [identityResult, snsResult, fundingResult] = await Promise.allSettled([
+        // Labels: identity + SNS resolve together (both fast)
+        Promise.allSettled([
           getBatchIdentity(ownerAddresses),
           getBatchSolDomains(snsCandidateAddresses),
-          getBatchFunding(ownerAddresses),
-        ]);
-        if (requestId !== analyzeRequestIdRef.current) return;
+        ]).then(([identityResult, snsResult]) => {
+          if (requestId !== analyzeRequestIdRef.current) return;
+          const identityMap =
+            identityResult.status === "fulfilled"
+              ? identityResult.value
+              : new Map<string, { name?: string }>();
+          const snsMap =
+            snsResult.status === "fulfilled"
+              ? snsResult.value
+              : new Map<string, string>();
+          setHolders(enrichHolders(baseHolders, identityMap, snsMap));
+        });
 
-        const identityMap =
-          identityResult.status === "fulfilled"
-            ? identityResult.value
-            : new Map<string, { name?: string }>();
-        const snsMap =
-          snsResult.status === "fulfilled"
-            ? snsResult.value
-            : new Map<string, string>();
-
-        setHolders(enrichHolders(baseHolders, identityMap, snsMap));
-
-        if (fundingResult.status === "fulfilled") {
-          setFundingMap(fundingResult.value);
-        }
+        // Funding: resolves independently (slower, many individual calls)
+        getBatchFunding(ownerAddresses).then((result) => {
+          if (requestId !== analyzeRequestIdRef.current) return;
+          setFundingMap(result);
+        }).catch(() => {});
       }
     } catch (error) {
       if (requestId !== analyzeRequestIdRef.current) return;
